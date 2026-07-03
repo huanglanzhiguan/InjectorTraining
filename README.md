@@ -35,7 +35,7 @@ Out of scope:
 - Security-tool tampering or bypass instructions
 - Injection into unrelated third-party processes
 - Kernel drivers, exploit chains, PPL bypasses, or anti-EDR evasion
-- Copy-paste injector implementations
+- General-purpose or stealth-focused injector frameworks
 
 ## Recommended Lab Setup
 
@@ -52,6 +52,32 @@ Recommended tools:
 - A benign DLL that only logs, increments a counter, or calls `OutputDebugString`
 
 Use separate x86 and x64 builds. Many injection bugs are architecture bugs disguised as logic bugs.
+
+## Current Lab Contents
+
+The repository currently contains the first complete lab:
+
+- `InjectorTraining.sln`
+- `lessons/01-classic-dll-injection.md`
+- `samples/classic-dll-injection/main.cpp`
+- `samples/classic-dll-injection/common/*`
+- `samples/classic-dll-injection/impl/*`
+- `samples/classic-dll-injection/TrainingDll.cpp`
+
+This first lab demonstrates classic DLL injection into an existing Notepad process that the student starts before running the injector. The DLL is benign and only displays a message box.
+
+Build with Visual Studio or MSBuild:
+
+```powershell
+MSBuild InjectorTraining.sln /p:Configuration=Debug /p:Platform=x64 /m
+```
+
+Run the demo:
+
+```powershell
+notepad.exe
+.\x64\Debug\InjectorLab.exe .\x64\Debug\TrainingDll.dll
+```
 
 ## Mental Model
 
