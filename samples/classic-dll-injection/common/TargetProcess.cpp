@@ -58,9 +58,4 @@ bool FindExistingProcessByImageName(const wchar_t* imageName, DWORD& pid)
     wprintf(L"Using %s PID %lu\n", imageName, pid);
     return true;
 }
-
-bool FindExistingTargetApp(DWORD& pid)
-{
-    return FindExistingProcessByImageName(L"TargetApp.exe", pid);
-}
 }

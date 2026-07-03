@@ -133,10 +133,24 @@ Open the solution in Visual Studio and build `Debug|x64`, or build from a Visual
 cd C:\RE\REProjects\InjectorTraining
 MSBuild InjectorTraining.sln /p:Configuration=Debug /p:Platform=x64 /m
 .\x64\Debug\TargetApp.exe
-.\x64\Debug\InjectorLab.exe .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --dll .\x64\Debug\TrainingDll.dll
 ```
 
 Start `TargetApp.exe` first. The injector finds `TargetApp.exe`, opens that process, writes the DLL path into the target, and starts a target thread at `LoadLibraryW`. Watch the target rows: loader-oriented checks should turn red when `TrainingDll.dll` is loaded.
+
+The short command uses the lesson defaults:
+
+```text
+--target app
+--load LoadLibraryW
+--launch CreateRemoteThread
+```
+
+The fully explicit command is:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+```
 
 If you run the injector a second time against the same target process, the message box will not appear again. That is expected: the DLL is already loaded, so another `LoadLibraryW` call would only increment the loader reference count. Windows does not call `DllMain(DLL_PROCESS_ATTACH)` again for a module that is already loaded in that process. Restart `TargetApp.exe` to repeat the visible demo from the beginning.
 

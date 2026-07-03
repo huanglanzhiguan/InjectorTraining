@@ -5,5 +5,4 @@
 namespace lab
 {
 bool FindExistingProcessByImageName(const wchar_t* imageName, DWORD& pid);
-bool FindExistingTargetApp(DWORD& pid);
 }

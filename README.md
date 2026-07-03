@@ -77,7 +77,15 @@ Run the demo:
 
 ```powershell
 .\x64\Debug\TargetApp.exe
-.\x64\Debug\InjectorLab.exe .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --dll .\x64\Debug\TrainingDll.dll
+```
+
+`InjectorLab` defaults to the first lesson's current method:
+
+```text
+--target app
+--load LoadLibraryW
+--launch CreateRemoteThread
 ```
 
 ## Mental Model

@@ -530,12 +530,14 @@ Suggested lab binaries:
 Suggested command style:
 
 ```text
-InjectorLab.exe --pid <pid> --load LoadLibraryExW --launch RemoteThread --dll TrainingDll.dll
-InjectorLab.exe --pid <pid> --load LdrLoadDll --launch APC --dll TrainingDll.dll
-InjectorLab.exe --pid <pid> --load ManualMap --launch ThreadHijack --dll TrainingDll.dll
+InjectorLab.exe --target app --load LoadLibraryW --launch CreateRemoteThread --dll TrainingDll.dll
+InjectorLab.exe --target app --load LdrLoadDll --launch APC --dll TrainingDll.dll
+InjectorLab.exe --target app --load ManualMap --launch ThreadHijack --dll TrainingDll.dll
 ```
 
 The command syntax should make the two axes obvious.
+
+The first implementation only supports `--load LoadLibraryW` and `--launch CreateRemoteThread`. The unsupported combinations are intentionally named early so the CLI can grow with the lessons.
 
 ## What To Avoid In The Lessons
 
