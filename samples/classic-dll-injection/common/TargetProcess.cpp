@@ -9,7 +9,7 @@
 
 namespace lab
 {
-bool FindExistingNotepad(DWORD& pid)
+bool FindExistingProcessByImageName(const wchar_t* imageName, DWORD& pid)
 {
     pid = 0;
 
@@ -32,7 +32,7 @@ bool FindExistingNotepad(DWORD& pid)
     DWORD matchCount = 0;
     do
     {
-        if (_wcsicmp(entry.szExeFile, L"notepad.exe") == 0)
+        if (_wcsicmp(entry.szExeFile, imageName) == 0)
         {
             ++matchCount;
             if (pid == 0)
@@ -40,22 +40,27 @@ bool FindExistingNotepad(DWORD& pid)
                 pid = entry.th32ProcessID;
             }
 
-            wprintf(L"Found notepad.exe PID %lu\n", entry.th32ProcessID);
+            wprintf(L"Found %s PID %lu\n", imageName, entry.th32ProcessID);
         }
     } while (Process32NextW(snapshot.get(), &entry));
 
     if (pid == 0)
     {
-        wprintf(L"No notepad.exe process found. Start Notepad, then run the injector again.\n");
+        wprintf(L"No %s process found. Start the target process, then run the injector again.\n", imageName);
         return false;
     }
 
     if (matchCount > 1)
     {
-        wprintf(L"Multiple notepad.exe processes found. Using PID %lu for this beginner lab.\n", pid);
+        wprintf(L"Multiple %s processes found. Using PID %lu for this beginner lab.\n", imageName, pid);
     }
 
-    wprintf(L"Using notepad.exe PID %lu\n", pid);
+    wprintf(L"Using %s PID %lu\n", imageName, pid);
     return true;
+}
+
+bool FindExistingTargetApp(DWORD& pid)
+{
+    return FindExistingProcessByImageName(L"TargetApp.exe", pid);
 }
 }

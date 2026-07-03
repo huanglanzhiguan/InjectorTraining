@@ -18,7 +18,7 @@ bool InjectDllWithLoadLibraryRemoteThread(DWORD targetPid, const wchar_t* dllPat
                 reinterpret_cast<void*>(existingModule));
         wprintf(L"LoadLibraryW would only increment the loader reference count; "
                 L"DllMain(DLL_PROCESS_ATTACH) will not run again.\n");
-        wprintf(L"Restart Notepad to repeat the visible MessageBox demo.\n");
+        wprintf(L"Restart TargetApp to repeat the visible MessageBox demo.\n");
         return true;
     }
 
@@ -79,7 +79,7 @@ bool InjectDllWithLoadLibraryRemoteThread(DWORD targetPid, const wchar_t* dllPat
     WaitForSingleObject(remoteThread.get(), INFINITE);
     VirtualFreeEx(process.get(), remoteDllPath, 0, MEM_RELEASE);
 
-    wprintf(L"Remote LoadLibraryW thread finished. Check Notepad for the message box.\n");
+    wprintf(L"Remote LoadLibraryW thread finished. Check TargetApp for detection rows and the message box.\n");
     return true;
 }
 }

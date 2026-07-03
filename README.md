@@ -59,12 +59,13 @@ The repository currently contains the first complete lab:
 
 - `InjectorTraining.sln`
 - `lessons/01-classic-dll-injection.md`
+- `samples/visual-target/*`
 - `samples/classic-dll-injection/main.cpp`
 - `samples/classic-dll-injection/common/*`
 - `samples/classic-dll-injection/impl/*`
 - `samples/classic-dll-injection/TrainingDll.cpp`
 
-This first lab demonstrates classic DLL injection into an existing Notepad process that the student starts before running the injector. The DLL is benign and only displays a message box.
+This first lab demonstrates classic DLL injection into `TargetApp.exe`, a lab-owned visual target process that the student starts before running the injector. The target app polls simple anti-injection observations so the classic loader-based injection becomes visible immediately. The DLL is benign and only displays a message box.
 
 Build with Visual Studio or MSBuild:
 
@@ -75,7 +76,7 @@ MSBuild InjectorTraining.sln /p:Configuration=Debug /p:Platform=x64 /m
 Run the demo:
 
 ```powershell
-notepad.exe
+.\x64\Debug\TargetApp.exe
 .\x64\Debug\InjectorLab.exe .\x64\Debug\TrainingDll.dll
 ```
 

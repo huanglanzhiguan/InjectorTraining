@@ -9,6 +9,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "InjectorLab", "samples\clas
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TrainingDll", "samples\classic-dll-injection\TrainingDll.vcxproj", "{51FB151E-843A-4EF2-8E80-3E6D6450B90A}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TargetApp", "samples\visual-target\TargetApp.vcxproj", "{50D4ABEC-A93F-417C-9E5D-DD1014A15A69}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -23,6 +25,10 @@ Global
 		{51FB151E-843A-4EF2-8E80-3E6D6450B90A}.Debug|x64.Build.0 = Debug|x64
 		{51FB151E-843A-4EF2-8E80-3E6D6450B90A}.Release|x64.ActiveCfg = Release|x64
 		{51FB151E-843A-4EF2-8E80-3E6D6450B90A}.Release|x64.Build.0 = Release|x64
+		{50D4ABEC-A93F-417C-9E5D-DD1014A15A69}.Debug|x64.ActiveCfg = Debug|x64
+		{50D4ABEC-A93F-417C-9E5D-DD1014A15A69}.Debug|x64.Build.0 = Debug|x64
+		{50D4ABEC-A93F-417C-9E5D-DD1014A15A69}.Release|x64.ActiveCfg = Release|x64
+		{50D4ABEC-A93F-417C-9E5D-DD1014A15A69}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

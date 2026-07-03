@@ -125,8 +125,9 @@ Status:
 - Buildable through `InjectorTraining.sln`
 - Shared helpers live in `samples/classic-dll-injection/common`
 - Injection implementations live in `samples/classic-dll-injection/impl`
+- Visual target app implemented in `samples/visual-target`
 
-### Lesson 2: Minimal Notepad MessageBox Demo
+### Lesson 2: Visual Target MessageBox Demo
 
 Purpose:
 Turn Lesson 1 into a small Visual Studio lab students can build and run.
@@ -134,13 +135,15 @@ Turn Lesson 1 into a small Visual Studio lab students can build and run.
 Student learns:
 
 - how to build the injector and training DLL
-- why the student starts Notepad before running the injector
+- why the student starts `TargetApp.exe` before running the injector
 - how to keep the DLL behavior benign and visible
 - why `DllMain` should stay small
+- how target-side detection rows make injection artifacts obvious
 
 Artifacts to inspect:
 
-- existing Notepad process
+- existing `TargetApp.exe` process
+- target-side detection rows
 - `TrainingDll.dll` in the module list
 - message box from the injected DLL
 - output from the injector
@@ -179,7 +182,7 @@ Artifacts to inspect:
 
 Deliverable:
 
-- write a detection timeline for the Notepad demo
+- write a detection timeline for the visual target demo
 
 ### Lesson 4: Why Mitigations Motivate Other Techniques
 
@@ -489,7 +492,7 @@ Write these first:
 
 1. Lesson 0: Lab Rules And Environment
 2. Lesson 1: Classic DLL Injection Timeline
-3. Lesson 2: Minimal Notepad MessageBox Demo
+3. Lesson 2: Visual Target MessageBox Demo
 4. Lesson 3: Detection Surface Of Classic DLL Injection
 5. Lesson 4: Why Mitigations Motivate Other Techniques
 6. Lesson 5: The Two-Axis Injection Model

@@ -21,7 +21,7 @@ int wmain(int argc, wchar_t** argv)
     }
 
     DWORD targetPid = 0;
-    if (!lab::FindExistingNotepad(targetPid))
+    if (!lab::FindExistingTargetApp(targetPid))
     {
         return 1;
     }

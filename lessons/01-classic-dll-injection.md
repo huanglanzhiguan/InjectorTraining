@@ -4,13 +4,13 @@ This lesson teaches classic DLL injection as a complete timeline, not as a list 
 
 Which process owns this memory, and is this pointer valid in the target?
 
-The lab target is a Notepad instance that the student starts before running the injector. The training DLL is benign and only displays a message box. The point is to understand the mechanism and the artifacts, not to hide from tools or inject into unrelated processes.
+The lab target is `TargetApp.exe`, a lab-owned visual process that the student starts before running the injector. The target app shows detection rows so the injection artifacts are obvious. The training DLL is benign and only displays a message box. The point is to understand the mechanism and the artifacts, not to hide from tools or inject into unrelated processes.
 
 ## Learning Goals
 
 By the end of this lesson, students should be able to explain:
 
-- why a pointer in the injector is not automatically valid in Notepad
+- why a pointer in the injector is not automatically valid in the target
 - why the DLL path must be copied into the target process
 - why `CreateRemoteThread` does not load a DLL by itself
 - why `LoadLibraryW` must run inside the target process
@@ -28,31 +28,31 @@ The injector starts with a local string:
 C:\Labs\InjectorTraining\TrainingDll.dll
 ```
 
-That string lives in the injector's memory. The address of that string is only meaningful inside the injector process. If the injector passes that local pointer to Notepad, Notepad will treat the numeric address as an address in Notepad's own virtual address space. That address may be unmapped, or it may point to unrelated data.
+That string lives in the injector's memory. The address of that string is only meaningful inside the injector process. If the injector passes that local pointer to `TargetApp.exe`, the target will treat the numeric address as an address in its own virtual address space. That address may be unmapped, or it may point to unrelated data.
 
-So the injector must create a second copy of the string inside Notepad.
+So the injector must create a second copy of the string inside the target.
 
 After `WriteProcessMemory`, the DLL path exists twice:
 
 - local copy: owned by the injector
-- remote copy: owned by Notepad
+- remote copy: owned by `TargetApp.exe`
 
-Only the remote address is valid as the parameter to code running inside Notepad.
+Only the remote address is valid as the parameter to code running inside the target.
 
 ## Complete Timeline
 
-Classic DLL injection into a student-opened Notepad process looks like this:
+Classic DLL injection into a student-opened `TargetApp.exe` process looks like this:
 
 1. The injector has a local DLL path string.
 2. The local string pointer is meaningful only in the injector's address space.
-3. Notepad cannot dereference that local pointer.
-4. The injector takes a process snapshot and finds an existing `notepad.exe` PID.
-5. The injector opens that Notepad process with rights for memory operations and thread creation.
-6. The injector allocates memory inside Notepad with `VirtualAllocEx`.
-7. `VirtualAllocEx` returns a remote address. That address is meaningful inside Notepad.
+3. The target cannot dereference that local pointer.
+4. The injector takes a process snapshot and finds an existing `TargetApp.exe` PID.
+5. The injector opens that target process with rights for memory operations and thread creation.
+6. The injector allocates memory inside the target with `VirtualAllocEx`.
+7. `VirtualAllocEx` returns a remote address. That address is meaningful inside the target.
 8. The injector copies the DLL path into that remote allocation with `WriteProcessMemory`.
 9. The DLL path now exists in both processes.
-10. The injector starts a thread inside Notepad.
+10. The injector starts a thread inside the target.
 11. The new thread's first function is `LoadLibraryW`.
 12. The new thread's first parameter is the remote DLL string address.
 13. On x64 Windows, conceptually:
@@ -63,7 +63,7 @@ RCX = remoteString
 RSP = new thread stack
 ```
 
-14. `LoadLibraryW` reads the DLL path from Notepad memory.
+14. `LoadLibraryW` reads the DLL path from target memory.
 15. The Windows loader loads the DLL:
 
     - reads PE headers
@@ -81,12 +81,12 @@ RSP = new thread stack
 ```mermaid
 sequenceDiagram
     participant I as "Injector.exe"
-    participant N as "Notepad.exe"
+    participant N as "TargetApp.exe"
     participant L as "Windows Loader"
     participant D as "TrainingDll.dll"
 
     I->>I: "Owns local DLL path string"
-    I->>I: "Find existing notepad.exe PID"
+    I->>I: "Find existing TargetApp.exe PID"
     I->>N: "OpenProcess with VM/thread rights"
     I->>N: "VirtualAllocEx for remote string buffer"
     N-->>I: "Returns remote address"
@@ -97,18 +97,19 @@ sequenceDiagram
     L->>L: "Map sections, relocations, imports, TLS"
     L->>D: "Call DllMain(DLL_PROCESS_ATTACH)"
     D->>N: "Show benign MessageBoxW"
+    N->>N: "Detection rows turn red"
 ```
 
 ## Why Each API Exists
 
 | Step | API or action | Why it exists | Artifact left behind |
 | --- | --- | --- | --- |
-| Find target | `CreateToolhelp32Snapshot` / `Process32FirstW` / `Process32NextW` | The lab requires the student to start Notepad first, then discovers that local target process. | Process enumeration showing `notepad.exe` and its PID. |
+| Find target | `CreateToolhelp32Snapshot` / `Process32FirstW` / `Process32NextW` | The lab requires the student to start `TargetApp.exe` first, then discovers that local target process. | Process enumeration showing `TargetApp.exe` and its PID. |
 | Get process access | `OpenProcess` | The injector needs a handle that allows remote allocation, writing, and thread creation. | Handle with `PROCESS_VM_OPERATION`, `PROCESS_VM_WRITE`, and `PROCESS_CREATE_THREAD`. |
-| Allocate target memory | `VirtualAllocEx` | The DLL path must live in Notepad memory because `LoadLibraryW` will run in Notepad. | New private writable memory region in Notepad. |
-| Copy DLL path | `WriteProcessMemory` | The local DLL string pointer is not valid in Notepad; we need a remote copy. | Cross-process memory write and a DLL path string in target memory. |
-| Find loader address | Resolve `LoadLibraryW` | The remote thread needs a start address that points to code present in Notepad. | Thread start path into loader-related code. |
-| Start target execution | `CreateRemoteThread` | The injector needs Notepad to execute `LoadLibraryW(remoteString)`. | New thread in Notepad. |
+| Allocate target memory | `VirtualAllocEx` | The DLL path must live in target memory because `LoadLibraryW` will run in the target. | New private writable memory region in the target. |
+| Copy DLL path | `WriteProcessMemory` | The local DLL string pointer is not valid in the target; we need a remote copy. | Cross-process memory write and a DLL path string in target memory. |
+| Find loader address | Resolve `LoadLibraryW` | The remote thread needs a start address that points to code present in the target. | Thread start path into loader-related code. |
+| Start target execution | `CreateRemoteThread` | The injector needs the target to execute `LoadLibraryW(remoteString)`. | New thread in the target. |
 | Load DLL | `LoadLibraryW` and loader internals | The Windows loader performs real PE loading work. | Image-load event, module list entry, PEB loader-list entry. |
 | Run training code | `DllMain(DLL_PROCESS_ATTACH)` | This is where our DLL first receives control during normal loading. | Message box, output logs, or other visible side effects. |
 
@@ -124,19 +125,20 @@ The sample code lives in:
 - `samples/classic-dll-injection/common/*`
 - `samples/classic-dll-injection/impl/LoadLibraryRemoteThread.cpp`
 - `samples/classic-dll-injection/TrainingDll.cpp`
+- `samples/visual-target/*`
 
 Open the solution in Visual Studio and build `Debug|x64`, or build from a Visual Studio Developer Command Prompt:
 
 ```powershell
 cd C:\RE\REProjects\InjectorTraining
 MSBuild InjectorTraining.sln /p:Configuration=Debug /p:Platform=x64 /m
-notepad.exe
+.\x64\Debug\TargetApp.exe
 .\x64\Debug\InjectorLab.exe .\x64\Debug\TrainingDll.dll
 ```
 
-Start Notepad first. The injector finds `notepad.exe`, opens that process, writes the DLL path into Notepad, and starts a Notepad thread at `LoadLibraryW`.
+Start `TargetApp.exe` first. The injector finds `TargetApp.exe`, opens that process, writes the DLL path into the target, and starts a target thread at `LoadLibraryW`. Watch the target rows: loader-oriented checks should turn red when `TrainingDll.dll` is loaded.
 
-If you run the injector a second time against the same Notepad process, the message box will not appear again. That is expected: the DLL is already loaded, so another `LoadLibraryW` call would only increment the loader reference count. Windows does not call `DllMain(DLL_PROCESS_ATTACH)` again for a module that is already loaded in that process. Restart Notepad to repeat the visible demo from the beginning.
+If you run the injector a second time against the same target process, the message box will not appear again. That is expected: the DLL is already loaded, so another `LoadLibraryW` call would only increment the loader reference count. Windows does not call `DllMain(DLL_PROCESS_ATTACH)` again for a module that is already loaded in that process. Restart `TargetApp.exe` to repeat the visible demo from the beginning.
 
 ## Code Walkthrough
 
@@ -166,12 +168,12 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 
 The injector performs four important actions:
 
-1. Finds an existing Notepad PID.
-2. Allocates memory inside Notepad.
+1. Finds an existing `TargetApp.exe` PID.
+2. Allocates memory inside the target.
 3. Copies the DLL path into that memory.
-4. Creates a Notepad thread whose first function is `LoadLibraryW`.
+4. Creates a target thread whose first function is `LoadLibraryW`.
 
-One subtle point: the thread start address must also be meaningful in Notepad. The sample resolves local `LoadLibraryW`, finds which local module actually owns that address, computes the function's RVA inside that module, finds the same module in Notepad, and then computes the target address:
+One subtle point: the thread start address must also be meaningful in the target. The sample resolves local `LoadLibraryW`, finds which local module actually owns that address, computes the function's RVA inside that module, finds the same module in the target, and then computes the target address:
 
 ```text
 remote LoadLibraryW = remote owning-module base + LoadLibraryW RVA
@@ -188,8 +190,8 @@ CreateRemoteThread(process, nullptr, 0, remoteLoadLibraryW, remoteDllPath, 0, nu
 Read that as:
 
 ```text
-Inside Notepad, start a new thread at LoadLibraryW.
-Pass the Notepad-owned DLL path pointer as the first argument.
+Inside the target, start a new thread at LoadLibraryW.
+Pass the target-owned DLL path pointer as the first argument.
 ```
 
 `CreateRemoteThread` does not load the DLL. It only creates a thread. The DLL load happens because the first function run by that thread is `LoadLibraryW`.
@@ -212,12 +214,12 @@ Write a DLL path into the target process, then run `LoadLibraryW` inside the tar
 
 Observable artifacts:
 
-- injector enumerates processes and opens Notepad
-- injector may find that the DLL is already present in Notepad's module list
+- injector enumerates processes and opens `TargetApp.exe`
+- injector may find that the DLL is already present in the target's module list
 - process handle with VM and thread rights
 - `VirtualAllocEx` creates target memory
-- `WriteProcessMemory` writes the DLL path into Notepad
-- new thread appears in Notepad
+- `WriteProcessMemory` writes the DLL path into the target
+- new thread appears in the target
 - thread begins at or near `LoadLibraryW`
 - DLL appears in module lists
 - PEB loader lists contain the DLL
