@@ -110,6 +110,14 @@ For a controlled APC run, copy the `alertable APC worker TID` shown in the `Targ
 .\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch QueueUserAPC --apc-thread <tid> --dll .\x64\Debug\TrainingDll.dll
 ```
 
+The thread-hijack lab also uses an existing target thread, but redirects it with `SuspendThread`, `GetThreadContext`, and `SetThreadContext` instead of waiting for alertable APC dispatch. Copy the `hijack demo worker TID` from the target header:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch ThreadHijack --hijack-thread <tid> --dll .\x64\Debug\TrainingDll.dll
+```
+
+This path stages a tiny x64 restore stub and a saved thread context in the target. The stub calls the selected load routine on the thread's normal stack, then uses `NtContinue` to restore the thread's original context. The lab intentionally leaves the hijack stub allocated so the private executable memory row can observe it.
+
 To compare the next load method, keep the launch method familiar and switch the loader entry point:
 
 ```powershell
@@ -345,19 +353,28 @@ Detection ideas:
 
 Thread hijacking avoids creating a new thread by redirecting an existing one. In this lab, it is another launch method.
 
+The current lab command is:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch ThreadHijack --hijack-thread <tid> --dll .\x64\Debug\TrainingDll.dll
+```
+
+Use the `hijack demo worker TID` shown in the `TargetApp.exe` header. The worker is a lab-owned non-alertable thread, which makes the comparison with APC explicit: APC depends on alertable wait timing, while hijacking redirects the selected thread directly.
+
 How it works:
 
-- The injector suspends one or more target threads.
+- The injector suspends a chosen target thread.
 - It reads a thread context.
-- It stages code or a call frame in target memory.
-- It changes the thread instruction pointer or stack so the thread runs the staged code.
-- It later attempts to restore the original context.
+- It stages a restore stub and saved context in target memory.
+- It changes the thread instruction pointer and stack so the thread runs the staged code.
+- The remote stub calls the selected load routine, then uses `NtContinue` to restore the original context.
 
 What to observe:
 
 - `SuspendThread` or native suspend calls
 - `GetThreadContext` and `SetThreadContext`
 - A thread resuming into memory that is not a normal loaded image
+- A new executable `MEM_PRIVATE` region for the restore stub
 - Possible stack anomalies or broken call chains
 
 Limitations:

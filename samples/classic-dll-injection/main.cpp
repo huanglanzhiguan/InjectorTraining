@@ -22,13 +22,14 @@ struct LabOptions
     const wchar_t* loadMethod = kDefaultLoadMethod;
     const wchar_t* launchMethod = kDefaultLaunchMethod;
     DWORD apcThreadId = 0;
+    DWORD hijackThreadId = 0;
     bool showHelp = false;
 };
 
 void PrintUsage(const wchar_t* programName)
 {
     wprintf(L"Usage:\n");
-    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW|LdrLoadDll] [--launch CreateRemoteThread|NtCreateThreadEx|QueueUserAPC] [--apc-thread tid]\n",
+    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW|LdrLoadDll] [--launch CreateRemoteThread|NtCreateThreadEx|QueueUserAPC|ThreadHijack] [--apc-thread tid] [--hijack-thread tid]\n",
             programName);
     wprintf(L"  %s <path-to-dll>  (legacy shorthand)\n\n", programName);
     wprintf(L"Defaults:\n");
@@ -36,6 +37,7 @@ void PrintUsage(const wchar_t* programName)
     wprintf(L"  --load LoadLibraryW\n");
     wprintf(L"  --launch CreateRemoteThread\n");
     wprintf(L"  --apc-thread 0               QueueUserAPC uses all target threads\n");
+    wprintf(L"  --hijack-thread 0            ThreadHijack requires an explicit target thread\n");
 }
 
 bool IsOption(const wchar_t* value, const wchar_t* optionName)
@@ -126,6 +128,20 @@ bool ParseOptions(int argc, wchar_t** argv, LabOptions& options)
                 return false;
             }
         }
+        else if (IsOption(argv[i], L"--hijack-thread"))
+        {
+            const wchar_t* value = nullptr;
+            if (!ReadOptionValue(argc, argv, i, L"--hijack-thread", &value))
+            {
+                return false;
+            }
+
+            if (!TryParseThreadId(value, options.hijackThreadId))
+            {
+                wprintf(L"Invalid --hijack-thread value: %s\n", value);
+                return false;
+            }
+        }
         else
         {
             wprintf(L"Unknown argument: %s\n", argv[i]);
@@ -178,6 +194,12 @@ bool TryParseLaunchMethod(const wchar_t* value, lab::LaunchMethod& launchMethod)
         return true;
     }
 
+    if (_wcsicmp(value, L"ThreadHijack") == 0 || _wcsicmp(value, L"Hijack") == 0)
+    {
+        launchMethod = lab::LaunchMethod::ThreadHijack;
+        return true;
+    }
+
     return false;
 }
 
@@ -209,7 +231,7 @@ bool ValidateMethodSelection(const LabOptions& options, lab::InjectorConfig& con
 
     if (!TryParseLaunchMethod(options.launchMethod, config.launchMethod))
     {
-        wprintf(L"Unsupported --launch %s. Available now: CreateRemoteThread, NtCreateThreadEx, QueueUserAPC.\n",
+        wprintf(L"Unsupported --launch %s. Available now: CreateRemoteThread, NtCreateThreadEx, QueueUserAPC, ThreadHijack.\n",
                 options.launchMethod);
         return false;
     }
@@ -220,7 +242,20 @@ bool ValidateMethodSelection(const LabOptions& options, lab::InjectorConfig& con
         return false;
     }
 
+    if (options.hijackThreadId != 0 && config.launchMethod != lab::LaunchMethod::ThreadHijack)
+    {
+        wprintf(L"--hijack-thread only applies to --launch ThreadHijack.\n");
+        return false;
+    }
+
+    if (config.launchMethod == lab::LaunchMethod::ThreadHijack && options.hijackThreadId == 0)
+    {
+        wprintf(L"--launch ThreadHijack requires --hijack-thread <tid>. Use the hijack demo worker TID shown in TargetApp.\n");
+        return false;
+    }
+
     config.queueUserApc.threadId = options.apcThreadId;
+    config.threadHijack.threadId = options.hijackThreadId;
     return true;
 }
 }
@@ -260,6 +295,10 @@ int wmain(int argc, wchar_t** argv)
     if (options.apcThreadId != 0)
     {
         wprintf(L"APC thread: %lu\n", options.apcThreadId);
+    }
+    if (options.hijackThreadId != 0)
+    {
+        wprintf(L"Hijack thread: %lu\n", options.hijackThreadId);
     }
     wprintf(L"DLL: %s\n", dllPath);
 

@@ -49,6 +49,8 @@ private:
     void CreateHeaderControls();
     bool StartAlertableApcWorker();
     void StopAlertableApcWorker();
+    bool StartHijackDemoWorker();
+    void StopHijackDemoWorker();
     void UpdateHintText();
     void LoadMechanisms();
     void CreateMechanismRow(size_t index);
@@ -89,6 +91,9 @@ private:
     HANDLE apc_worker_stop_event_ = nullptr;
     HANDLE apc_worker_thread_ = nullptr;
     DWORD apc_worker_thread_id_ = 0;
+    HANDLE hijack_worker_thread_ = nullptr;
+    DWORD hijack_worker_thread_id_ = 0;
+    volatile LONG hijack_worker_stop_requested_ = 0;
     HFONT ui_font_ = nullptr;
     HFONT header_font_ = nullptr;
     HFONT status_font_ = nullptr;

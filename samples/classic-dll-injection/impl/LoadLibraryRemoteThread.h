@@ -14,10 +14,16 @@ enum class LaunchMethod
 {
     CreateRemoteThread,
     NtCreateThreadEx,
-    QueueUserAPC
+    QueueUserAPC,
+    ThreadHijack
 };
 
 struct QueueUserApcConfig
+{
+    DWORD threadId = 0;
+};
+
+struct ThreadHijackConfig
 {
     DWORD threadId = 0;
 };
@@ -27,6 +33,7 @@ struct InjectorConfig
     LoadMethod loadMethod = LoadMethod::LoadLibraryW;
     LaunchMethod launchMethod = LaunchMethod::CreateRemoteThread;
     QueueUserApcConfig queueUserApc;
+    ThreadHijackConfig threadHijack;
 };
 
 bool InjectDllWithLoadLibraryRemoteThread(DWORD targetPid, const wchar_t* dllPath);

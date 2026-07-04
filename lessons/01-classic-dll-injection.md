@@ -174,6 +174,14 @@ For a controlled APC run, copy the `alertable APC worker TID` from the target he
 .\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch QueueUserAPC --apc-thread <tid> --dll .\x64\Debug\TrainingDll.dll
 ```
 
+The lab also includes a controlled thread-hijack launch path. Copy the `hijack demo worker TID` from the target header and pass it explicitly:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch ThreadHijack --hijack-thread <tid> --dll .\x64\Debug\TrainingDll.dll
+```
+
+That command still uses the normal Windows loader, but the launch method changes. The injector suspends the selected worker thread, saves its context, redirects it to a tiny remote stub, and the stub uses `NtContinue` to return the thread to its original context after the loader call.
+
 For the native-loader comparison, switch `--load` and keep the launch method simple:
 
 ```powershell

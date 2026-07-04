@@ -164,7 +164,26 @@ DWORD WINAPI AlertableApcWorkerProc(LPVOID parameter)
     }
 }
 
-std::wstring RuntimeIdentityText(DWORD apc_worker_thread_id)
+DWORD WINAPI HijackDemoWorkerProc(LPVOID parameter)
+{
+    auto* stop_requested = static_cast<volatile LONG*>(parameter);
+    volatile unsigned long long counter = 0;
+
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+
+    while (InterlockedCompareExchange(stop_requested, 0, 0) == 0)
+    {
+        for (int i = 0; i < 100000; ++i)
+        {
+            ++counter;
+            YieldProcessor();
+        }
+    }
+
+    return static_cast<DWORD>(counter & 0xFF);
+}
+
+std::wstring RuntimeIdentityText(DWORD apc_worker_thread_id, DWORD hijack_worker_thread_id)
 {
     std::wstring text = L"TargetApp PID " + std::to_wstring(GetCurrentProcessId());
 
@@ -175,6 +194,15 @@ std::wstring RuntimeIdentityText(DWORD apc_worker_thread_id)
     else
     {
         text += L" | alertable APC worker unavailable";
+    }
+
+    if (hijack_worker_thread_id != 0)
+    {
+        text += L" | hijack demo worker TID " + std::to_wstring(hijack_worker_thread_id);
+    }
+    else
+    {
+        text += L" | hijack demo worker unavailable";
     }
 
     return text;
@@ -275,6 +303,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
     case WM_CREATE:
         CreateControls();
         StartAlertableApcWorker();
+        StartHijackDemoWorker();
         UpdateHintText();
         LoadMechanisms();
         SetTimer(window_, kBaselineWarmupTimerId, kBaselineWarmupMs, nullptr);
@@ -407,6 +436,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
 
     case WM_DESTROY:
         StopAlertableApcWorker();
+        StopHijackDemoWorker();
         KillTimer(window_, kBaselineWarmupTimerId);
         KillTimer(window_, kLiveTimerId);
         if (ui_font_ != nullptr)
@@ -449,7 +479,9 @@ void MainWindow::CreateControls()
     hint_label_ = CreateStaticLabel(
         window_,
         instance_,
-        (L"Live rows poll after startup baseline. " + RuntimeIdentityText(apc_worker_thread_id_)).c_str());
+        (L"Live rows poll after startup baseline. " +
+         RuntimeIdentityText(apc_worker_thread_id_, hijack_worker_thread_id_))
+            .c_str());
     ApplyUIFont(hint_label_);
 
     reset_button_ = CreateWindowExW(
@@ -539,13 +571,47 @@ void MainWindow::StopAlertableApcWorker()
     apc_worker_thread_id_ = 0;
 }
 
+bool MainWindow::StartHijackDemoWorker()
+{
+    InterlockedExchange(&hijack_worker_stop_requested_, 0);
+
+    hijack_worker_thread_ = CreateThread(nullptr,
+                                         0,
+                                         &HijackDemoWorkerProc,
+                                         const_cast<LONG*>(&hijack_worker_stop_requested_),
+                                         0,
+                                         &hijack_worker_thread_id_);
+    if (hijack_worker_thread_ == nullptr)
+    {
+        hijack_worker_thread_id_ = 0;
+        return false;
+    }
+
+    return true;
+}
+
+void MainWindow::StopHijackDemoWorker()
+{
+    InterlockedExchange(&hijack_worker_stop_requested_, 1);
+
+    if (hijack_worker_thread_ != nullptr)
+    {
+        WaitForSingleObject(hijack_worker_thread_, 2000);
+        CloseHandle(hijack_worker_thread_);
+        hijack_worker_thread_ = nullptr;
+    }
+
+    hijack_worker_thread_id_ = 0;
+}
+
 void MainWindow::UpdateHintText()
 {
     if (hint_label_ != nullptr)
     {
         SetControlTextIfChanged(
             hint_label_,
-            L"Live rows poll after startup baseline. " + RuntimeIdentityText(apc_worker_thread_id_));
+            L"Live rows poll after startup baseline. " +
+                RuntimeIdentityText(apc_worker_thread_id_, hijack_worker_thread_id_));
     }
 }
 

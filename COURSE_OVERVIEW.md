@@ -535,14 +535,16 @@ Suggested command style:
 InjectorLab.exe --target app --load LoadLibraryW --launch CreateRemoteThread --dll TrainingDll.dll
 InjectorLab.exe --target app --load LoadLibraryW --launch NtCreateThreadEx --dll TrainingDll.dll
 InjectorLab.exe --target app --load LoadLibraryW --launch QueueUserAPC --dll TrainingDll.dll
+InjectorLab.exe --target app --load LoadLibraryW --launch ThreadHijack --hijack-thread <tid> --dll TrainingDll.dll
 InjectorLab.exe --target app --load LdrLoadDll --launch CreateRemoteThread --dll TrainingDll.dll
 InjectorLab.exe --target app --load LdrLoadDll --launch QueueUserAPC --dll TrainingDll.dll
+InjectorLab.exe --target app --load LdrLoadDll --launch ThreadHijack --hijack-thread <tid> --dll TrainingDll.dll
 InjectorLab.exe --target app --load ManualMap --launch ThreadHijack --dll TrainingDll.dll
 ```
 
 The command syntax should make the two axes obvious.
 
-The implementation now supports `--load LoadLibraryW` and `--load LdrLoadDll` with `--launch CreateRemoteThread`, `--launch NtCreateThreadEx`, or `--launch QueueUserAPC`. That gives students both comparison axes: same-load/different-launch and same-launch/different-load. The unsupported combinations are intentionally named early so the CLI can grow with the lessons.
+The implementation now supports `--load LoadLibraryW` and `--load LdrLoadDll` with `--launch CreateRemoteThread`, `--launch NtCreateThreadEx`, `--launch QueueUserAPC`, or `--launch ThreadHijack`. That gives students both comparison axes: same-load/different-launch and same-launch/different-load. The unsupported combinations are intentionally named early so the CLI can grow with the lessons.
 
 ## What To Avoid In The Lessons
 

@@ -36,10 +36,20 @@ struct LdrLoadDllRemoteContext
     wchar_t dll_path[MAX_PATH] = {};
 };
 
+struct HijackRemoteContext
+{
+    std::uintptr_t start_routine = 0;
+    std::uintptr_t argument = 0;
+    std::uintptr_t nt_continue = 0;
+    std::uintptr_t result = 0;
+    alignas(16) CONTEXT original_context = {};
+};
+
 static_assert(sizeof(void*) == 8, "The remote LdrLoadDll stub is x64-only.");
 static_assert(offsetof(LdrLoadDllRemoteContext, dll_name) == 0x08);
 static_assert(offsetof(LdrLoadDllRemoteContext, module_handle) == 0x18);
 static_assert(offsetof(LdrLoadDllRemoteContext, status) == 0x20);
+static_assert(offsetof(HijackRemoteContext, original_context) == 0x20);
 
 // x64 adapter:
 //   rcx = LdrLoadDllRemoteContext*
@@ -78,6 +88,41 @@ const unsigned char kLdrLoadDllStub[] = {
     0x48, 0x83, 0xC4, 0x38,
     // ret
     0xC3,
+};
+
+// x64 thread-hijack adapter:
+//   rcx = HijackRemoteContext*
+//   calls ctx->start_routine(ctx->argument)
+//   stores the routine return value in ctx->result
+//   calls NtContinue(&ctx->original_context, FALSE) to resume original code
+//
+// The injector points the hijacked thread's RIP at this stub and keeps the
+// thread's real stack. NtContinue restores the original RIP, RSP, and registers.
+const unsigned char kThreadHijackStub[] = {
+    // mov rbx, rcx
+    0x48, 0x89, 0xCB,
+    // and rsp, -10h
+    0x48, 0x83, 0xE4, 0xF0,
+    // sub rsp, 20h
+    0x48, 0x83, 0xEC, 0x20,
+    // mov rax, [rbx]
+    0x48, 0x8B, 0x03,
+    // mov rcx, [rbx+8]
+    0x48, 0x8B, 0x4B, 0x08,
+    // call rax
+    0xFF, 0xD0,
+    // mov [rbx+18h], rax
+    0x48, 0x89, 0x43, 0x18,
+    // mov rax, [rbx+10h]
+    0x48, 0x8B, 0x43, 0x10,
+    // lea rcx, [rbx+20h]
+    0x48, 0x8D, 0x4B, 0x20,
+    // xor edx, edx
+    0x33, 0xD2,
+    // call rax
+    0xFF, 0xD0,
+    // jmp $
+    0xEB, 0xFE,
 };
 
 using NtCreateThreadExFn = NTSTATUS(NTAPI*)(PHANDLE ThreadHandle,
@@ -210,6 +255,14 @@ bool WaitForRemoteModuleLoad(DWORD targetPid, const wchar_t* dllPath)
     return false;
 }
 
+bool ThreadBelongsToProcess(DWORD targetPid, DWORD threadId)
+{
+    const std::vector<DWORD> targetThreadIds = EnumerateThreadIdsForProcess(targetPid);
+    return std::find(targetThreadIds.begin(), targetThreadIds.end(), threadId) != targetThreadIds.end();
+}
+
+bool ReleaseRemoteAllocation(HANDLE process, LPVOID allocation, const wchar_t* name);
+
 bool QueueRemoteRoutineApc(DWORD targetPid,
                            const wchar_t* dllPath,
                            LPTHREAD_START_ROUTINE startRoutine,
@@ -316,6 +369,184 @@ bool QueueRemoteRoutineApc(DWORD targetPid,
     return false;
 }
 
+bool LaunchWithThreadHijack(HANDLE process,
+                            DWORD targetPid,
+                            const wchar_t* dllPath,
+                            LPTHREAD_START_ROUTINE startRoutine,
+                            LPVOID argument,
+                            DWORD hijackThreadId,
+                            bool& canReleaseRemoteArgument)
+{
+    wprintf(L"Hijacking an existing target thread with SuspendThread/GetThreadContext/SetThreadContext.\n");
+
+    canReleaseRemoteArgument = true;
+
+    if (hijackThreadId == 0)
+    {
+        wprintf(L"ThreadHijack requires --hijack-thread <tid>.\n");
+        return false;
+    }
+
+    if (!ThreadBelongsToProcess(targetPid, hijackThreadId))
+    {
+        wprintf(L"Requested hijack thread %lu does not belong to target PID %lu.\n",
+                hijackThreadId,
+                targetPid);
+        return false;
+    }
+
+    LPTHREAD_START_ROUTINE remoteNtContinue =
+        ResolveRemoteProcAddress(targetPid, L"ntdll.dll", "NtContinue");
+    if (!remoteNtContinue)
+    {
+        return false;
+    }
+
+    LPVOID remoteStub = VirtualAllocEx(process,
+                                       nullptr,
+                                       sizeof(kThreadHijackStub),
+                                       MEM_COMMIT | MEM_RESERVE,
+                                       PAGE_READWRITE);
+    if (!remoteStub)
+    {
+        PrintLastError(L"VirtualAllocEx(thread-hijack stub)");
+        return false;
+    }
+
+    LPVOID remoteContext = VirtualAllocEx(process,
+                                          nullptr,
+                                          sizeof(HijackRemoteContext),
+                                          MEM_COMMIT | MEM_RESERVE,
+                                          PAGE_READWRITE);
+    if (!remoteContext)
+    {
+        PrintLastError(L"VirtualAllocEx(thread-hijack context)");
+        ReleaseRemoteAllocation(process, remoteStub, L"VirtualFreeEx(thread-hijack stub)");
+        return false;
+    }
+
+    if (!WriteProcessMemory(process,
+                            remoteStub,
+                            kThreadHijackStub,
+                            sizeof(kThreadHijackStub),
+                            nullptr))
+    {
+        PrintLastError(L"WriteProcessMemory(thread-hijack stub)");
+        ReleaseRemoteAllocation(process, remoteContext, L"VirtualFreeEx(thread-hijack context)");
+        ReleaseRemoteAllocation(process, remoteStub, L"VirtualFreeEx(thread-hijack stub)");
+        return false;
+    }
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtectEx(process,
+                          remoteStub,
+                          sizeof(kThreadHijackStub),
+                          PAGE_EXECUTE_READ,
+                          &oldProtect))
+    {
+        PrintLastError(L"VirtualProtectEx(thread-hijack stub)");
+        ReleaseRemoteAllocation(process, remoteContext, L"VirtualFreeEx(thread-hijack context)");
+        ReleaseRemoteAllocation(process, remoteStub, L"VirtualFreeEx(thread-hijack stub)");
+        return false;
+    }
+
+    FlushInstructionCache(process, remoteStub, sizeof(kThreadHijackStub));
+
+    UniqueHandle thread(OpenThread(THREAD_SUSPEND_RESUME |
+                                       THREAD_GET_CONTEXT |
+                                       THREAD_SET_CONTEXT |
+                                       THREAD_QUERY_INFORMATION,
+                                   FALSE,
+                                   hijackThreadId));
+    if (!thread.valid())
+    {
+        PrintLastError(L"OpenThread(thread hijack)");
+        ReleaseRemoteAllocation(process, remoteContext, L"VirtualFreeEx(thread-hijack context)");
+        ReleaseRemoteAllocation(process, remoteStub, L"VirtualFreeEx(thread-hijack stub)");
+        return false;
+    }
+
+    const DWORD previousSuspendCount = SuspendThread(thread.get());
+    if (previousSuspendCount == static_cast<DWORD>(-1))
+    {
+        PrintLastError(L"SuspendThread");
+        ReleaseRemoteAllocation(process, remoteContext, L"VirtualFreeEx(thread-hijack context)");
+        ReleaseRemoteAllocation(process, remoteStub, L"VirtualFreeEx(thread-hijack stub)");
+        return false;
+    }
+
+    CONTEXT originalContext = {};
+    originalContext.ContextFlags = CONTEXT_FULL;
+    if (!GetThreadContext(thread.get(), &originalContext))
+    {
+        PrintLastError(L"GetThreadContext");
+        ResumeThread(thread.get());
+        ReleaseRemoteAllocation(process, remoteContext, L"VirtualFreeEx(thread-hijack context)");
+        ReleaseRemoteAllocation(process, remoteStub, L"VirtualFreeEx(thread-hijack stub)");
+        return false;
+    }
+
+    HijackRemoteContext hijackContext = {};
+    hijackContext.start_routine = reinterpret_cast<std::uintptr_t>(startRoutine);
+    hijackContext.argument = reinterpret_cast<std::uintptr_t>(argument);
+    hijackContext.nt_continue = reinterpret_cast<std::uintptr_t>(remoteNtContinue);
+    hijackContext.original_context = originalContext;
+
+    if (!WriteProcessMemory(process,
+                            remoteContext,
+                            &hijackContext,
+                            sizeof(hijackContext),
+                            nullptr))
+    {
+        PrintLastError(L"WriteProcessMemory(thread-hijack context)");
+        ResumeThread(thread.get());
+        ReleaseRemoteAllocation(process, remoteContext, L"VirtualFreeEx(thread-hijack context)");
+        ReleaseRemoteAllocation(process, remoteStub, L"VirtualFreeEx(thread-hijack stub)");
+        return false;
+    }
+
+    CONTEXT redirectContext = originalContext;
+    redirectContext.Rip = reinterpret_cast<DWORD64>(remoteStub);
+    redirectContext.Rcx = reinterpret_cast<DWORD64>(remoteContext);
+    redirectContext.ContextFlags = CONTEXT_FULL;
+
+    if (!SetThreadContext(thread.get(), &redirectContext))
+    {
+        PrintLastError(L"SetThreadContext");
+        ResumeThread(thread.get());
+        ReleaseRemoteAllocation(process, remoteContext, L"VirtualFreeEx(thread-hijack context)");
+        ReleaseRemoteAllocation(process, remoteStub, L"VirtualFreeEx(thread-hijack stub)");
+        return false;
+    }
+
+    if (ResumeThread(thread.get()) == static_cast<DWORD>(-1))
+    {
+        PrintLastError(L"ResumeThread");
+        SetThreadContext(thread.get(), &originalContext);
+        ReleaseRemoteAllocation(process, remoteContext, L"VirtualFreeEx(thread-hijack context)");
+        ReleaseRemoteAllocation(process, remoteStub, L"VirtualFreeEx(thread-hijack stub)");
+        return false;
+    }
+
+    canReleaseRemoteArgument = false;
+
+    wprintf(L"Redirected thread %lu to stub 0x%p with context 0x%p.\n",
+            hijackThreadId,
+            remoteStub,
+            remoteContext);
+
+    const bool observedLoad = WaitForRemoteModuleLoad(targetPid, dllPath);
+    wprintf(L"Leaving the remote thread-hijack stub and context allocated for observation.\n");
+
+    if (!observedLoad)
+    {
+        wprintf(L"DLL load was not observed after the hijacked thread resumed.\n");
+        return false;
+    }
+
+    return true;
+}
+
 bool LaunchRemoteRoutine(HANDLE process,
                          DWORD targetPid,
                          const wchar_t* dllPath,
@@ -342,6 +573,15 @@ bool LaunchRemoteRoutine(HANDLE process,
                                      config.queueUserApc.threadId,
                                      canReleaseRemoteArgument);
 
+    case LaunchMethod::ThreadHijack:
+        return LaunchWithThreadHijack(process,
+                                      targetPid,
+                                      dllPath,
+                                      startRoutine,
+                                      argument,
+                                      config.threadHijack.threadId,
+                                      canReleaseRemoteArgument);
+
     default:
         wprintf(L"Unsupported launch method.\n");
         return false;
@@ -358,6 +598,8 @@ const wchar_t* LaunchMethodName(LaunchMethod launchMethod)
         return L"NtCreateThreadEx";
     case LaunchMethod::QueueUserAPC:
         return L"QueueUserAPC";
+    case LaunchMethod::ThreadHijack:
+        return L"ThreadHijack";
     default:
         return L"unknown";
     }
@@ -465,6 +707,10 @@ bool InjectDllWithLoadLibraryInternal(DWORD targetPid,
     if (canReleaseRemoteDllPath)
     {
         VirtualFreeEx(process.get(), remoteDllPath, 0, MEM_RELEASE);
+    }
+    else if (config.launchMethod == LaunchMethod::ThreadHijack)
+    {
+        wprintf(L"Leaving the remote LoadLibraryW argument allocated because the hijacked thread has no completion handle.\n");
     }
 
     wprintf(L"Remote LoadLibraryW launched with %s finished. "
@@ -650,7 +896,11 @@ bool InjectDllWithLdrLoadDll(DWORD targetPid,
     }
     else
     {
-        if (config.queueUserApc.threadId != 0)
+        if (config.launchMethod == LaunchMethod::ThreadHijack)
+        {
+            wprintf(L"Leaving the remote LdrLoadDll stub and context allocated because the hijacked thread has no completion handle.\n");
+        }
+        else if (config.queueUserApc.threadId != 0)
         {
             wprintf(L"Leaving the remote LdrLoadDll stub and context allocated because QueueUserAPC does not provide a completion handle for the APC routine.\n");
         }
