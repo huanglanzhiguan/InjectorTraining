@@ -1,4 +1,5 @@
 .vs/
+.symbols/
 x64/
 Win32/
 Debug/
@@ -8,4 +9,3 @@ Release/
 *.VC.db
 *.VC.VC.opendb
 *.ipch
-

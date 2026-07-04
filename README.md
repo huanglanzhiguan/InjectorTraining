@@ -126,6 +126,15 @@ To compare the next load method, keep the launch method familiar and switch the 
 
 This path stages a small x64 adapter stub and a native `UNICODE_STRING` context in `TargetApp.exe`. The stub is needed because `LdrLoadDll` takes four parameters, while the launch methods in this beginner lab provide one pointer-sized argument.
 
+The private-loader comparison goes one layer lower and resolves private `ntdll` routines from the exact Microsoft PDB that matches the local `ntdll.dll` build:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LdrpLoadDll --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --target app --load LdrpLoadDllInternal --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+```
+
+On first use, the injector reads the RSDS CodeView record from local `ntdll.dll`, downloads the matching `ntdll.pdb` into `.symbols\`, resolves the private routine RVA, then adds that RVA to the target process's `ntdll.dll` base. These methods are intentionally taught as brittle private-internal calls, not as preferred production APIs.
+
 ## Mental Model
 
 Most user-mode injectors are combinations of five steps:
@@ -227,9 +236,11 @@ Current implemented load commands:
 ```powershell
 .\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
 .\x64\Debug\InjectorLab.exe --target app --load LdrLoadDll --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --target app --load LdrpLoadDll --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --target app --load LdrpLoadDllInternal --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
 ```
 
-`LoadLibraryW` can be launched directly with the DLL path as the one argument. `LdrLoadDll` needs the remote adapter stub because it expects native call data such as `UNICODE_STRING`.
+`LoadLibraryW` can be launched directly with the DLL path as the one argument. `LdrLoadDll` needs the remote adapter stub because it expects native call data such as `UNICODE_STRING`. `LdrpLoadDll` and `LdrpLoadDllInternal` add an exact-PDB symbol resolution step because these private routines are not exported.
 
 What to observe:
 
@@ -246,7 +257,7 @@ Limitations:
 - The DLL path is visible and can fail because of filesystem, quoting, path, or search-order issues.
 - Starting work from `DllMain` can deadlock or break under loader lock.
 - Using a local loader address as if it always matches the target is not robust; a reliable injector must reason about the target's loaded modules.
-- `Ldrp*` routines are private implementation details. They may require symbol resolution and can break when `ntdll` changes.
+- `Ldrp*` routines are private implementation details. This lab resolves them from the matching Microsoft PDB and restricts the call layout to Windows 10 1809+ x64 and Windows 11 x64 builds.
 - Going lower than `LoadLibraryExW` may change user-mode API telemetry, but it does not remove the core loader artifacts.
 
 Detection ideas:

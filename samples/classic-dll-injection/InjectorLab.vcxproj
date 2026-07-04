@@ -61,6 +61,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>Dbghelp.lib;Urlmon.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -77,9 +78,11 @@
       <SubSystem>Console</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>Dbghelp.lib;Urlmon.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="common\SymbolResolver.cpp" />
     <ClCompile Include="common\TargetProcess.cpp" />
     <ClCompile Include="common\Win32Helpers.cpp" />
     <ClCompile Include="impl\LoadLibraryRemoteThread.cpp" />
@@ -87,6 +90,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common\Handle.h" />
+    <ClInclude Include="common\SymbolResolver.h" />
     <ClInclude Include="common\TargetProcess.h" />
     <ClInclude Include="common\Win32Helpers.h" />
     <ClInclude Include="impl\LoadLibraryRemoteThread.h" />

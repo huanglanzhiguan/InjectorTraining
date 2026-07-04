@@ -7,7 +7,9 @@ namespace lab
 enum class LoadMethod
 {
     LoadLibraryW,
-    LdrLoadDll
+    LdrLoadDll,
+    LdrpLoadDll,
+    LdrpLoadDllInternal
 };
 
 enum class LaunchMethod

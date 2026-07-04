@@ -190,6 +190,15 @@ For the native-loader comparison, switch `--load` and keep the launch method sim
 
 This path still uses the Windows loader, but the injector must stage a small remote stub plus native call data because `LdrLoadDll` is not a one-argument function like `LoadLibraryW`.
 
+For the private-loader comparison, keep the same launch method and move below the exported native API:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LdrpLoadDll --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --target app --load LdrpLoadDllInternal --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+```
+
+These paths read the RSDS record from local `ntdll.dll`, download the matching Microsoft `ntdll.pdb` into `.symbols\`, resolve the private routine RVA, and then stage a remote context/stub for the version-specific call layout. They are useful for learning how symbol-backed private calls work; they are also intentionally brittle compared with documented APIs.
+
 If you run the injector a second time against the same target process, the message box will not appear again. That is expected: the DLL is already loaded, so another `LoadLibraryW` call would only increment the loader reference count. Windows does not call `DllMain(DLL_PROCESS_ATTACH)` again for a module that is already loaded in that process. Restart `TargetApp.exe` to repeat the visible demo from the beginning.
 
 ## Code Walkthrough

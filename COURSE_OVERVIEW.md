@@ -539,12 +539,14 @@ InjectorLab.exe --target app --load LoadLibraryW --launch ThreadHijack --hijack-
 InjectorLab.exe --target app --load LdrLoadDll --launch CreateRemoteThread --dll TrainingDll.dll
 InjectorLab.exe --target app --load LdrLoadDll --launch QueueUserAPC --dll TrainingDll.dll
 InjectorLab.exe --target app --load LdrLoadDll --launch ThreadHijack --hijack-thread <tid> --dll TrainingDll.dll
+InjectorLab.exe --target app --load LdrpLoadDll --launch CreateRemoteThread --dll TrainingDll.dll
+InjectorLab.exe --target app --load LdrpLoadDllInternal --launch CreateRemoteThread --dll TrainingDll.dll
 InjectorLab.exe --target app --load ManualMap --launch ThreadHijack --dll TrainingDll.dll
 ```
 
 The command syntax should make the two axes obvious.
 
-The implementation now supports `--load LoadLibraryW` and `--load LdrLoadDll` with `--launch CreateRemoteThread`, `--launch NtCreateThreadEx`, `--launch QueueUserAPC`, or `--launch ThreadHijack`. That gives students both comparison axes: same-load/different-launch and same-launch/different-load. The unsupported combinations are intentionally named early so the CLI can grow with the lessons.
+The implementation now supports `--load LoadLibraryW`, `--load LdrLoadDll`, `--load LdrpLoadDll`, and `--load LdrpLoadDllInternal` with the existing launch-method axis. The private `Ldrp*` methods resolve exact RVAs from the matching local `ntdll.pdb` and currently target Windows 10 1809+ x64 and Windows 11 x64 call layouts. Manual mapping remains the next major unimplemented load method.
 
 ## What To Avoid In The Lessons
 

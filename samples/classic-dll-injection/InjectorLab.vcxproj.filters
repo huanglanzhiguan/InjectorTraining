@@ -32,6 +32,9 @@
     <ClCompile Include="common\Win32Helpers.cpp">
       <Filter>Source Files\common</Filter>
     </ClCompile>
+    <ClCompile Include="common\SymbolResolver.cpp">
+      <Filter>Source Files\common</Filter>
+    </ClCompile>
     <ClCompile Include="impl\LoadLibraryRemoteThread.cpp">
       <Filter>Source Files\impl</Filter>
     </ClCompile>
@@ -44,6 +47,9 @@
       <Filter>Header Files\common</Filter>
     </ClInclude>
     <ClInclude Include="common\Win32Helpers.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="common\SymbolResolver.h">
       <Filter>Header Files\common</Filter>
     </ClInclude>
     <ClInclude Include="impl\LoadLibraryRemoteThread.h">

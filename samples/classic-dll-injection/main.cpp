@@ -29,7 +29,7 @@ struct LabOptions
 void PrintUsage(const wchar_t* programName)
 {
     wprintf(L"Usage:\n");
-    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW|LdrLoadDll] [--launch CreateRemoteThread|NtCreateThreadEx|QueueUserAPC|ThreadHijack] [--apc-thread tid] [--hijack-thread tid]\n",
+    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW|LdrLoadDll|LdrpLoadDll|LdrpLoadDllInternal] [--launch CreateRemoteThread|NtCreateThreadEx|QueueUserAPC|ThreadHijack] [--apc-thread tid] [--hijack-thread tid]\n",
             programName);
     wprintf(L"  %s <path-to-dll>  (legacy shorthand)\n\n", programName);
     wprintf(L"Defaults:\n");
@@ -217,6 +217,18 @@ bool TryParseLoadMethod(const wchar_t* value, lab::LoadMethod& loadMethod)
         return true;
     }
 
+    if (_wcsicmp(value, L"LdrpLoadDll") == 0)
+    {
+        loadMethod = lab::LoadMethod::LdrpLoadDll;
+        return true;
+    }
+
+    if (_wcsicmp(value, L"LdrpLoadDllInternal") == 0)
+    {
+        loadMethod = lab::LoadMethod::LdrpLoadDllInternal;
+        return true;
+    }
+
     return false;
 }
 
@@ -224,7 +236,7 @@ bool ValidateMethodSelection(const LabOptions& options, lab::InjectorConfig& con
 {
     if (!TryParseLoadMethod(options.loadMethod, config.loadMethod))
     {
-        wprintf(L"Unsupported --load %s. Available now: LoadLibraryW, LdrLoadDll.\n",
+        wprintf(L"Unsupported --load %s. Available now: LoadLibraryW, LdrLoadDll, LdrpLoadDll, LdrpLoadDllInternal.\n",
                 options.loadMethod);
         return false;
     }
