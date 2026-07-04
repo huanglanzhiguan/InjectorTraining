@@ -531,13 +531,14 @@ Suggested command style:
 
 ```text
 InjectorLab.exe --target app --load LoadLibraryW --launch CreateRemoteThread --dll TrainingDll.dll
+InjectorLab.exe --target app --load LoadLibraryW --launch NtCreateThreadEx --dll TrainingDll.dll
 InjectorLab.exe --target app --load LdrLoadDll --launch APC --dll TrainingDll.dll
 InjectorLab.exe --target app --load ManualMap --launch ThreadHijack --dll TrainingDll.dll
 ```
 
 The command syntax should make the two axes obvious.
 
-The first implementation only supports `--load LoadLibraryW` and `--launch CreateRemoteThread`. The unsupported combinations are intentionally named early so the CLI can grow with the lessons.
+The first implementation supports `--load LoadLibraryW` with either `--launch CreateRemoteThread` or `--launch NtCreateThreadEx`. That gives students an early same-load/different-launch comparison before the course moves into APCs, hijacking, hooks, and manual mapping. The unsupported combinations are intentionally named early so the CLI can grow with the lessons.
 
 ## What To Avoid In The Lessons
 

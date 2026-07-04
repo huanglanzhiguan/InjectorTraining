@@ -80,13 +80,21 @@ Run the demo:
 .\x64\Debug\InjectorLab.exe --dll .\x64\Debug\TrainingDll.dll
 ```
 
-`InjectorLab` defaults to the first lesson's current method:
+`InjectorLab` defaults to the first lesson's most direct method:
 
 ```text
 --target app
 --load LoadLibraryW
 --launch CreateRemoteThread
 ```
+
+You can also run the same load method through the native thread launch path:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch NtCreateThreadEx --dll .\x64\Debug\TrainingDll.dll
+```
+
+That is a launch-method comparison, not a stealth upgrade. Both commands write a DLL path into `TargetApp.exe`, run `LoadLibraryW` inside the target, and should produce the same loader-visible target detections.
 
 ## Mental Model
 

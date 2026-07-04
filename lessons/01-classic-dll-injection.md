@@ -109,7 +109,7 @@ sequenceDiagram
 | Allocate target memory | `VirtualAllocEx` | The DLL path must live in target memory because `LoadLibraryW` will run in the target. | New private writable memory region in the target. |
 | Copy DLL path | `WriteProcessMemory` | The local DLL string pointer is not valid in the target; we need a remote copy. | Cross-process memory write and a DLL path string in target memory. |
 | Find loader address | Resolve `LoadLibraryW` | The remote thread needs a start address that points to code present in the target. | Thread start path into loader-related code. |
-| Start target execution | `CreateRemoteThread` | The injector needs the target to execute `LoadLibraryW(remoteString)`. | New thread in the target. |
+| Start target execution | `CreateRemoteThread` or `NtCreateThreadEx` | The injector needs the target to execute `LoadLibraryW(remoteString)`. | New thread in the target. |
 | Load DLL | `LoadLibraryW` and loader internals | The Windows loader performs real PE loading work. | Image-load event, module list entry, PEB loader-list entry. |
 | Run training code | `DllMain(DLL_PROCESS_ATTACH)` | This is where our DLL first receives control during normal loading. | Message box, output logs, or other visible side effects. |
 
@@ -151,6 +151,14 @@ The fully explicit command is:
 ```powershell
 .\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
 ```
+
+The same load method can also be launched with the native thread API:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch NtCreateThreadEx --dll .\x64\Debug\TrainingDll.dll
+```
+
+For this lesson, treat that as a controlled comparison. The path staging and DLL load are unchanged; only the API that creates the remote thread changes. The target should still show loader-visible module artifacts because `LoadLibraryW` is still doing the load.
 
 If you run the injector a second time against the same target process, the message box will not appear again. That is expected: the DLL is already loaded, so another `LoadLibraryW` call would only increment the loader reference count. Windows does not call `DllMain(DLL_PROCESS_ATTACH)` again for a module that is already loaded in that process. Restart `TargetApp.exe` to repeat the visible demo from the beginning.
 
@@ -195,7 +203,7 @@ remote LoadLibraryW = remote owning-module base + LoadLibraryW RVA
 
 That keeps the lesson honest: both the parameter pointer and the function pointer must make sense in the target process. On modern Windows, a function requested through `kernel32.dll` may resolve through another loader module such as `KernelBase.dll`, so the owning module matters.
 
-The most important line conceptually is:
+The most important `CreateRemoteThread` line conceptually is:
 
 ```cpp
 CreateRemoteThread(process, nullptr, 0, remoteLoadLibraryW, remoteDllPath, 0, nullptr);
@@ -209,6 +217,8 @@ Pass the target-owned DLL path pointer as the first argument.
 ```
 
 `CreateRemoteThread` does not load the DLL. It only creates a thread. The DLL load happens because the first function run by that thread is `LoadLibraryW`.
+
+`NtCreateThreadEx` has the same role in this lab. It changes the thread creation interface, but the first target instruction is still `LoadLibraryW(remoteString)`.
 
 ## Detection Surface
 

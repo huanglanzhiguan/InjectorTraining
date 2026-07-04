@@ -26,7 +26,7 @@ struct LabOptions
 void PrintUsage(const wchar_t* programName)
 {
     wprintf(L"Usage:\n");
-    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW] [--launch CreateRemoteThread]\n",
+    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW] [--launch CreateRemoteThread|NtCreateThreadEx]\n",
             programName);
     wprintf(L"  %s <path-to-dll>  (legacy shorthand)\n\n", programName);
     wprintf(L"Defaults:\n");
@@ -128,7 +128,24 @@ std::wstring NormalizeTargetImageName(const wchar_t* target)
     return imageName;
 }
 
-bool ValidateMethodSelection(const LabOptions& options)
+bool TryParseLaunchMethod(const wchar_t* value, lab::RemoteThreadLaunchMethod& launchMethod)
+{
+    if (_wcsicmp(value, L"CreateRemoteThread") == 0)
+    {
+        launchMethod = lab::RemoteThreadLaunchMethod::CreateRemoteThread;
+        return true;
+    }
+
+    if (_wcsicmp(value, L"NtCreateThreadEx") == 0)
+    {
+        launchMethod = lab::RemoteThreadLaunchMethod::NtCreateThreadEx;
+        return true;
+    }
+
+    return false;
+}
+
+bool ValidateMethodSelection(const LabOptions& options, lab::RemoteThreadLaunchMethod& launchMethod)
 {
     if (_wcsicmp(options.loadMethod, L"LoadLibraryW") != 0)
     {
@@ -136,9 +153,10 @@ bool ValidateMethodSelection(const LabOptions& options)
         return false;
     }
 
-    if (_wcsicmp(options.launchMethod, L"CreateRemoteThread") != 0)
+    if (!TryParseLaunchMethod(options.launchMethod, launchMethod))
     {
-        wprintf(L"Unsupported --launch %s. Available now: CreateRemoteThread.\n", options.launchMethod);
+        wprintf(L"Unsupported --launch %s. Available now: CreateRemoteThread, NtCreateThreadEx.\n",
+                options.launchMethod);
         return false;
     }
 
@@ -161,7 +179,8 @@ int wmain(int argc, wchar_t** argv)
         return 0;
     }
 
-    if (!ValidateMethodSelection(options))
+    lab::RemoteThreadLaunchMethod launchMethod = lab::RemoteThreadLaunchMethod::CreateRemoteThread;
+    if (!ValidateMethodSelection(options, launchMethod))
     {
         return 1;
     }
@@ -185,7 +204,7 @@ int wmain(int argc, wchar_t** argv)
         return 1;
     }
 
-    if (!lab::InjectDllWithLoadLibraryRemoteThread(targetPid, dllPath))
+    if (!lab::InjectDllWithLoadLibrary(targetPid, dllPath, launchMethod))
     {
         return 1;
     }
