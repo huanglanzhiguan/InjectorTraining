@@ -47,6 +47,9 @@ private:
 
     void CreateControls();
     void CreateHeaderControls();
+    bool StartAlertableApcWorker();
+    void StopAlertableApcWorker();
+    void UpdateHintText();
     void LoadMechanisms();
     void CreateMechanismRow(size_t index);
     void LayoutControls(int width, int height);
@@ -83,6 +86,9 @@ private:
     HWND header_details_label_ = nullptr;
     HWND header_last_checked_label_ = nullptr;
     HWND status_label_ = nullptr;
+    HANDLE apc_worker_stop_event_ = nullptr;
+    HANDLE apc_worker_thread_ = nullptr;
+    DWORD apc_worker_thread_id_ = 0;
     HFONT ui_font_ = nullptr;
     HFONT header_font_ = nullptr;
     HFONT status_font_ = nullptr;

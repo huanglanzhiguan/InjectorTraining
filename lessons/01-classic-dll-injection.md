@@ -160,6 +160,14 @@ The same load method can also be launched with the native thread API:
 
 For this lesson, treat that as a controlled comparison. The path staging and DLL load are unchanged; only the API that creates the remote thread changes. The target should still show loader-visible module artifacts because `LoadLibraryW` is still doing the load.
 
+The lab also supports the APC launch path for the later APC lesson:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch QueueUserAPC --dll .\x64\Debug\TrainingDll.dll
+```
+
+That command still uses `LoadLibraryW`, but it does not create a new loader thread. It queues the call to an existing alertable worker thread in `TargetApp.exe`.
+
 If you run the injector a second time against the same target process, the message box will not appear again. That is expected: the DLL is already loaded, so another `LoadLibraryW` call would only increment the loader reference count. Windows does not call `DllMain(DLL_PROCESS_ATTACH)` again for a module that is already loaded in that process. Restart `TargetApp.exe` to repeat the visible demo from the beginning.
 
 ## Code Walkthrough
@@ -245,6 +253,7 @@ Observable artifacts:
 - `WriteProcessMemory` writes the DLL path into the target
 - new thread appears in the target
 - thread begins at or near `LoadLibraryW`
+- with `QueueUserAPC`, the loader call runs on an existing alertable target thread instead of a new loader thread
 - DLL appears in module lists
 - PEB loader lists contain the DLL
 - image-load telemetry records the DLL

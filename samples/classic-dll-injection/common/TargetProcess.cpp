@@ -6,6 +6,7 @@
 #include <tlhelp32.h>
 
 #include <cstdio>
+#include <vector>
 
 namespace lab
 {
@@ -57,5 +58,36 @@ bool FindExistingProcessByImageName(const wchar_t* imageName, DWORD& pid)
 
     wprintf(L"Using %s PID %lu\n", imageName, pid);
     return true;
+}
+
+std::vector<DWORD> EnumerateThreadIdsForProcess(DWORD pid)
+{
+    std::vector<DWORD> threadIds;
+
+    UniqueHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
+    if (!snapshot.valid())
+    {
+        PrintLastError(L"CreateToolhelp32Snapshot(threads)");
+        return threadIds;
+    }
+
+    THREADENTRY32 entry = {};
+    entry.dwSize = sizeof(entry);
+
+    if (!Thread32First(snapshot.get(), &entry))
+    {
+        PrintLastError(L"Thread32First");
+        return threadIds;
+    }
+
+    do
+    {
+        if (entry.th32OwnerProcessID == pid)
+        {
+            threadIds.push_back(entry.th32ThreadID);
+        }
+    } while (Thread32Next(snapshot.get(), &entry));
+
+    return threadIds;
 }
 }

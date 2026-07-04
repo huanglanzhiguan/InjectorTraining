@@ -26,7 +26,7 @@ struct LabOptions
 void PrintUsage(const wchar_t* programName)
 {
     wprintf(L"Usage:\n");
-    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW] [--launch CreateRemoteThread|NtCreateThreadEx]\n",
+    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW] [--launch CreateRemoteThread|NtCreateThreadEx|QueueUserAPC]\n",
             programName);
     wprintf(L"  %s <path-to-dll>  (legacy shorthand)\n\n", programName);
     wprintf(L"Defaults:\n");
@@ -128,24 +128,30 @@ std::wstring NormalizeTargetImageName(const wchar_t* target)
     return imageName;
 }
 
-bool TryParseLaunchMethod(const wchar_t* value, lab::RemoteThreadLaunchMethod& launchMethod)
+bool TryParseLaunchMethod(const wchar_t* value, lab::LaunchMethod& launchMethod)
 {
     if (_wcsicmp(value, L"CreateRemoteThread") == 0)
     {
-        launchMethod = lab::RemoteThreadLaunchMethod::CreateRemoteThread;
+        launchMethod = lab::LaunchMethod::CreateRemoteThread;
         return true;
     }
 
     if (_wcsicmp(value, L"NtCreateThreadEx") == 0)
     {
-        launchMethod = lab::RemoteThreadLaunchMethod::NtCreateThreadEx;
+        launchMethod = lab::LaunchMethod::NtCreateThreadEx;
+        return true;
+    }
+
+    if (_wcsicmp(value, L"QueueUserAPC") == 0 || _wcsicmp(value, L"APC") == 0)
+    {
+        launchMethod = lab::LaunchMethod::QueueUserAPC;
         return true;
     }
 
     return false;
 }
 
-bool ValidateMethodSelection(const LabOptions& options, lab::RemoteThreadLaunchMethod& launchMethod)
+bool ValidateMethodSelection(const LabOptions& options, lab::LaunchMethod& launchMethod)
 {
     if (_wcsicmp(options.loadMethod, L"LoadLibraryW") != 0)
     {
@@ -155,7 +161,7 @@ bool ValidateMethodSelection(const LabOptions& options, lab::RemoteThreadLaunchM
 
     if (!TryParseLaunchMethod(options.launchMethod, launchMethod))
     {
-        wprintf(L"Unsupported --launch %s. Available now: CreateRemoteThread, NtCreateThreadEx.\n",
+        wprintf(L"Unsupported --launch %s. Available now: CreateRemoteThread, NtCreateThreadEx, QueueUserAPC.\n",
                 options.launchMethod);
         return false;
     }
@@ -179,7 +185,7 @@ int wmain(int argc, wchar_t** argv)
         return 0;
     }
 
-    lab::RemoteThreadLaunchMethod launchMethod = lab::RemoteThreadLaunchMethod::CreateRemoteThread;
+    lab::LaunchMethod launchMethod = lab::LaunchMethod::CreateRemoteThread;
     if (!ValidateMethodSelection(options, launchMethod))
     {
         return 1;

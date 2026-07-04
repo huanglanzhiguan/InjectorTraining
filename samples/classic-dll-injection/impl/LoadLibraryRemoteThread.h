@@ -4,14 +4,15 @@
 
 namespace lab
 {
-enum class RemoteThreadLaunchMethod
+enum class LaunchMethod
 {
     CreateRemoteThread,
-    NtCreateThreadEx
+    NtCreateThreadEx,
+    QueueUserAPC
 };
 
 bool InjectDllWithLoadLibraryRemoteThread(DWORD targetPid, const wchar_t* dllPath);
 bool InjectDllWithLoadLibrary(DWORD targetPid,
                               const wchar_t* dllPath,
-                              RemoteThreadLaunchMethod launchMethod);
+                              LaunchMethod launchMethod);
 }

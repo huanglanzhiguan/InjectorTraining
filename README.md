@@ -96,6 +96,14 @@ You can also run the same load method through the native thread launch path:
 
 That is a launch-method comparison, not a stealth upgrade. Both commands write a DLL path into `TargetApp.exe`, run `LoadLibraryW` inside the target, and should produce the same loader-visible target detections.
 
+The APC launch lab uses the same staged DLL path and loader call, but asks an existing target thread to run it:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch QueueUserAPC --dll .\x64\Debug\TrainingDll.dll
+```
+
+`TargetApp.exe` includes one alertable APC worker thread so this beginner lab is deterministic. Against an arbitrary already-running process, `QueueUserAPC` may queue successfully and still never execute if no target thread enters an alertable wait.
+
 ## Mental Model
 
 Most user-mode injectors are combinations of five steps:
@@ -267,10 +275,17 @@ ScyllaHide anchor:
 
 APC injection uses an existing thread as the execution vehicle. In this lab, `QueueUserAPC` is treated as a launch method.
 
+The current lab command is:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch QueueUserAPC --dll .\x64\Debug\TrainingDll.dll
+```
+
 How it works:
 
 - The injector queues a user-mode APC to a target thread.
 - The APC routine runs when the target thread enters an alertable wait.
+- `TargetApp.exe` creates one lab-owned worker thread that waits with `WaitForSingleObjectEx(..., TRUE)` so students can observe a reliable dispatch case.
 - Early-bird APC variants queue work before the main thread begins normal execution, then resume the process.
 
 What to observe:
@@ -285,6 +300,7 @@ Limitations:
 - Normal user-mode APCs require alertable execution.
 - Many target threads never enter an alertable wait at the right time.
 - The APC routine address must be valid in the target.
+- Freeing the remote argument buffer is unsafe while any queued APC might still run later, so this lab intentionally leaves it allocated for APC launches.
 - Complex work can corrupt program assumptions if it runs at an unexpected time.
 - Cross-bitness and WOW64 transitions add complexity.
 
@@ -780,7 +796,7 @@ Deliverable:
 
 ### Lab 5: APC Timing
 
-Use a controlled target with one thread that enters an alertable wait and one thread that does not. Compare whether queued work runs.
+Use the controlled `TargetApp.exe` alertable APC worker first. Then compare that reliable case with a process or target mode that does not enter alertable waits.
 
 Deliverable:
 

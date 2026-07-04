@@ -143,9 +143,41 @@ HWND CreateStaticLabel(HWND parent, HINSTANCE instance, const wchar_t* text)
         nullptr);
 }
 
-std::wstring RuntimeIdentityText()
+DWORD WINAPI AlertableApcWorkerProc(LPVOID parameter)
 {
-    return L"TargetApp PID " + std::to_wstring(GetCurrentProcessId());
+    HANDLE stop_event = static_cast<HANDLE>(parameter);
+
+    for (;;)
+    {
+        const DWORD wait_result = WaitForSingleObjectEx(stop_event, 1000, TRUE);
+        if (wait_result == WAIT_OBJECT_0)
+        {
+            return 0;
+        }
+
+        if (wait_result == WAIT_TIMEOUT || wait_result == WAIT_IO_COMPLETION)
+        {
+            continue;
+        }
+
+        return 1;
+    }
+}
+
+std::wstring RuntimeIdentityText(DWORD apc_worker_thread_id)
+{
+    std::wstring text = L"TargetApp PID " + std::to_wstring(GetCurrentProcessId());
+
+    if (apc_worker_thread_id != 0)
+    {
+        text += L" | alertable APC worker TID " + std::to_wstring(apc_worker_thread_id);
+    }
+    else
+    {
+        text += L" | alertable APC worker unavailable";
+    }
+
+    return text;
 }
 }
 
@@ -242,6 +274,8 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
     {
     case WM_CREATE:
         CreateControls();
+        StartAlertableApcWorker();
+        UpdateHintText();
         LoadMechanisms();
         SetTimer(window_, kBaselineWarmupTimerId, kBaselineWarmupMs, nullptr);
         return 0;
@@ -372,6 +406,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
     }
 
     case WM_DESTROY:
+        StopAlertableApcWorker();
         KillTimer(window_, kBaselineWarmupTimerId);
         KillTimer(window_, kLiveTimerId);
         if (ui_font_ != nullptr)
@@ -414,7 +449,7 @@ void MainWindow::CreateControls()
     hint_label_ = CreateStaticLabel(
         window_,
         instance_,
-        (L"Live rows poll after startup baseline. " + RuntimeIdentityText()).c_str());
+        (L"Live rows poll after startup baseline. " + RuntimeIdentityText(apc_worker_thread_id_)).c_str());
     ApplyUIFont(hint_label_);
 
     reset_button_ = CreateWindowExW(
@@ -454,6 +489,64 @@ void MainWindow::CreateHeaderControls()
     ApplyHeaderFont(header_status_label_);
     ApplyHeaderFont(header_details_label_);
     ApplyHeaderFont(header_last_checked_label_);
+}
+
+bool MainWindow::StartAlertableApcWorker()
+{
+    apc_worker_stop_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (apc_worker_stop_event_ == nullptr)
+    {
+        return false;
+    }
+
+    apc_worker_thread_ = CreateThread(nullptr,
+                                      0,
+                                      &AlertableApcWorkerProc,
+                                      apc_worker_stop_event_,
+                                      0,
+                                      &apc_worker_thread_id_);
+    if (apc_worker_thread_ == nullptr)
+    {
+        CloseHandle(apc_worker_stop_event_);
+        apc_worker_stop_event_ = nullptr;
+        apc_worker_thread_id_ = 0;
+        return false;
+    }
+
+    return true;
+}
+
+void MainWindow::StopAlertableApcWorker()
+{
+    if (apc_worker_stop_event_ != nullptr)
+    {
+        SetEvent(apc_worker_stop_event_);
+    }
+
+    if (apc_worker_thread_ != nullptr)
+    {
+        WaitForSingleObject(apc_worker_thread_, 2000);
+        CloseHandle(apc_worker_thread_);
+        apc_worker_thread_ = nullptr;
+    }
+
+    if (apc_worker_stop_event_ != nullptr)
+    {
+        CloseHandle(apc_worker_stop_event_);
+        apc_worker_stop_event_ = nullptr;
+    }
+
+    apc_worker_thread_id_ = 0;
+}
+
+void MainWindow::UpdateHintText()
+{
+    if (hint_label_ != nullptr)
+    {
+        SetControlTextIfChanged(
+            hint_label_,
+            L"Live rows poll after startup baseline. " + RuntimeIdentityText(apc_worker_thread_id_));
+    }
 }
 
 void MainWindow::LoadMechanisms()
