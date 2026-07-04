@@ -36,11 +36,7 @@ struct InjectorConfig
     ThreadHijackConfig threadHijack;
 };
 
-bool InjectDllWithLoadLibraryRemoteThread(DWORD targetPid, const wchar_t* dllPath);
 bool InjectDll(DWORD targetPid,
                const wchar_t* dllPath,
                const InjectorConfig& config);
-bool InjectDllWithLoadLibrary(DWORD targetPid,
-                              const wchar_t* dllPath,
-                              const InjectorConfig& config);
 }

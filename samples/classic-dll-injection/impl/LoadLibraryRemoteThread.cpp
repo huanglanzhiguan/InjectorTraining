@@ -948,23 +948,4 @@ bool InjectDll(DWORD targetPid,
     }
 }
 
-bool InjectDllWithLoadLibrary(DWORD targetPid,
-                              const wchar_t* dllPath,
-                              const InjectorConfig& config)
-{
-    InjectorConfig loadLibraryConfig = config;
-    loadLibraryConfig.loadMethod = LoadMethod::LoadLibraryW;
-    return InjectDll(targetPid, dllPath, loadLibraryConfig);
-}
-
-bool InjectDllWithLoadLibraryRemoteThread(DWORD targetPid, const wchar_t* dllPath)
-{
-    InjectorConfig config;
-    config.loadMethod = LoadMethod::LoadLibraryW;
-    config.launchMethod = LaunchMethod::CreateRemoteThread;
-
-    return InjectDllWithLoadLibrary(targetPid,
-                                    dllPath,
-                                    config);
-}
 }

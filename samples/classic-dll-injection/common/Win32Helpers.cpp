@@ -81,25 +81,6 @@ bool GetFullFilePath(const wchar_t* input, wchar_t* output, DWORD outputCount)
     return true;
 }
 
-bool BuildSystemExecutablePath(const wchar_t* exeName, wchar_t* output, DWORD outputCount)
-{
-    UINT length = GetSystemDirectoryW(output, outputCount);
-    if (length == 0 || length >= outputCount)
-    {
-        PrintLastError(L"GetSystemDirectoryW");
-        return false;
-    }
-
-    if (wcscat_s(output, outputCount, L"\\") != 0 ||
-        wcscat_s(output, outputCount, exeName) != 0)
-    {
-        wprintf(L"Failed to build system executable path for %s.\n", exeName);
-        return false;
-    }
-
-    return true;
-}
-
 std::uintptr_t FindRemoteModuleBase(DWORD pid, const wchar_t* moduleName)
 {
     UniqueHandle snapshot = CreateModuleSnapshot(pid);
