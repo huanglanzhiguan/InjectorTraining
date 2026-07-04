@@ -168,6 +168,14 @@ The lab also supports the APC launch path for the later APC lesson:
 
 That command still uses `LoadLibraryW`, but it does not create a new loader thread. It queues the call to an existing alertable worker thread in `TargetApp.exe`.
 
+For the native-loader comparison, switch `--load` and keep the launch method simple:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LdrLoadDll --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+```
+
+This path still uses the Windows loader, but the injector must stage a small remote stub plus native call data because `LdrLoadDll` is not a one-argument function like `LoadLibraryW`.
+
 If you run the injector a second time against the same target process, the message box will not appear again. That is expected: the DLL is already loaded, so another `LoadLibraryW` call would only increment the loader reference count. Windows does not call `DllMain(DLL_PROCESS_ATTACH)` again for a module that is already loaded in that process. Restart `TargetApp.exe` to repeat the visible demo from the beginning.
 
 ## Code Walkthrough
@@ -277,6 +285,7 @@ Mitigations or alternatives:
 
 New artifacts introduced:
 
+- `LdrLoadDll` in this lab introduces a small private executable remote stub and native `UNICODE_STRING` context
 - native loader calls still leave loader-visible DLL artifacts
 - APC introduces queued APC and alertable-wait timing artifacts
 - thread hijacking introduces suspend/context-change artifacts

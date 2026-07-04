@@ -104,6 +104,14 @@ The APC launch lab uses the same staged DLL path and loader call, but asks an ex
 
 `TargetApp.exe` includes one alertable APC worker thread so this beginner lab is deterministic. Against an arbitrary already-running process, `QueueUserAPC` may queue successfully and still never execute if no target thread enters an alertable wait.
 
+To compare the next load method, keep the launch method familiar and switch the loader entry point:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LdrLoadDll --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+```
+
+This path stages a small x64 adapter stub and a native `UNICODE_STRING` context in `TargetApp.exe`. The stub is needed because `LdrLoadDll` takes four parameters, while the launch methods in this beginner lab provide one pointer-sized argument.
+
 ## Mental Model
 
 Most user-mode injectors are combinations of five steps:
@@ -199,6 +207,15 @@ How it works:
 - It starts code in the target with one of the launch methods.
 - The in-target code calls the selected loader entry point.
 - The Windows loader maps the DLL, resolves imports, runs TLS callbacks, and calls `DllMain`.
+
+Current implemented load commands:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --target app --load LdrLoadDll --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+```
+
+`LoadLibraryW` can be launched directly with the DLL path as the one argument. `LdrLoadDll` needs the remote adapter stub because it expects native call data such as `UNICODE_STRING`.
 
 What to observe:
 

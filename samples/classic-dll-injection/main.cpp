@@ -26,7 +26,7 @@ struct LabOptions
 void PrintUsage(const wchar_t* programName)
 {
     wprintf(L"Usage:\n");
-    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW] [--launch CreateRemoteThread|NtCreateThreadEx|QueueUserAPC]\n",
+    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW|LdrLoadDll] [--launch CreateRemoteThread|NtCreateThreadEx|QueueUserAPC]\n",
             programName);
     wprintf(L"  %s <path-to-dll>  (legacy shorthand)\n\n", programName);
     wprintf(L"Defaults:\n");
@@ -151,11 +151,31 @@ bool TryParseLaunchMethod(const wchar_t* value, lab::LaunchMethod& launchMethod)
     return false;
 }
 
-bool ValidateMethodSelection(const LabOptions& options, lab::LaunchMethod& launchMethod)
+bool TryParseLoadMethod(const wchar_t* value, lab::LoadMethod& loadMethod)
 {
-    if (_wcsicmp(options.loadMethod, L"LoadLibraryW") != 0)
+    if (_wcsicmp(value, L"LoadLibraryW") == 0)
     {
-        wprintf(L"Unsupported --load %s. Available now: LoadLibraryW.\n", options.loadMethod);
+        loadMethod = lab::LoadMethod::LoadLibraryW;
+        return true;
+    }
+
+    if (_wcsicmp(value, L"LdrLoadDll") == 0)
+    {
+        loadMethod = lab::LoadMethod::LdrLoadDll;
+        return true;
+    }
+
+    return false;
+}
+
+bool ValidateMethodSelection(const LabOptions& options,
+                             lab::LoadMethod& loadMethod,
+                             lab::LaunchMethod& launchMethod)
+{
+    if (!TryParseLoadMethod(options.loadMethod, loadMethod))
+    {
+        wprintf(L"Unsupported --load %s. Available now: LoadLibraryW, LdrLoadDll.\n",
+                options.loadMethod);
         return false;
     }
 
@@ -185,8 +205,9 @@ int wmain(int argc, wchar_t** argv)
         return 0;
     }
 
+    lab::LoadMethod loadMethod = lab::LoadMethod::LoadLibraryW;
     lab::LaunchMethod launchMethod = lab::LaunchMethod::CreateRemoteThread;
-    if (!ValidateMethodSelection(options, launchMethod))
+    if (!ValidateMethodSelection(options, loadMethod, launchMethod))
     {
         return 1;
     }
@@ -210,7 +231,7 @@ int wmain(int argc, wchar_t** argv)
         return 1;
     }
 
-    if (!lab::InjectDllWithLoadLibrary(targetPid, dllPath, launchMethod))
+    if (!lab::InjectDll(targetPid, dllPath, loadMethod, launchMethod))
     {
         return 1;
     }

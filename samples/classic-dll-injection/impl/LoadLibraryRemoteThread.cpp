@@ -4,8 +4,11 @@
 #include "../common/TargetProcess.h"
 #include "../common/Win32Helpers.h"
 
+#include <climits>
+#include <cstddef>
 #include <cstdio>
 #include <cwchar>
+#include <cstdint>
 
 namespace lab
 {
@@ -13,6 +16,68 @@ namespace
 {
 constexpr DWORD kApcLoadWaitTimeoutMs = 5000;
 constexpr DWORD kApcLoadPollIntervalMs = 100;
+
+struct RemoteUnicodeString
+{
+    USHORT length = 0;
+    USHORT maximum_length = 0;
+    ULONG padding = 0;
+    std::uintptr_t buffer = 0;
+};
+
+struct LdrLoadDllRemoteContext
+{
+    std::uintptr_t ldr_load_dll = 0;
+    RemoteUnicodeString dll_name;
+    std::uintptr_t module_handle = 0;
+    NTSTATUS status = 0;
+    ULONG padding = 0;
+    wchar_t dll_path[MAX_PATH] = {};
+};
+
+static_assert(sizeof(void*) == 8, "The remote LdrLoadDll stub is x64-only.");
+static_assert(offsetof(LdrLoadDllRemoteContext, dll_name) == 0x08);
+static_assert(offsetof(LdrLoadDllRemoteContext, module_handle) == 0x18);
+static_assert(offsetof(LdrLoadDllRemoteContext, status) == 0x20);
+
+// x64 adapter:
+//   rcx = LdrLoadDllRemoteContext*
+//   calls ctx->ldr_load_dll(nullptr, nullptr, &ctx->dll_name, &ctx->module_handle)
+//   stores NTSTATUS in ctx->status
+//
+// CreateRemoteThread/NtCreateThreadEx/QueueUserAPC only give the launched code
+// one pointer-sized argument. The stub expands that one context pointer into
+// the four-argument native loader call.
+const unsigned char kLdrLoadDllStub[] = {
+    // sub rsp, 38h
+    0x48, 0x83, 0xEC, 0x38,
+    // mov [rsp+28h], rcx
+    0x48, 0x89, 0x4C, 0x24, 0x28,
+    // mov rax, [rcx]
+    0x48, 0x8B, 0x01,
+    // xor ecx, ecx
+    0x33, 0xC9,
+    // xor edx, edx
+    0x33, 0xD2,
+    // mov r8, [rsp+28h]
+    0x4C, 0x8B, 0x44, 0x24, 0x28,
+    // add r8, 8
+    0x49, 0x83, 0xC0, 0x08,
+    // mov r9, [rsp+28h]
+    0x4C, 0x8B, 0x4C, 0x24, 0x28,
+    // add r9, 18h
+    0x49, 0x83, 0xC1, 0x18,
+    // call rax
+    0xFF, 0xD0,
+    // mov rcx, [rsp+28h]
+    0x48, 0x8B, 0x4C, 0x24, 0x28,
+    // mov [rcx+20h], eax
+    0x89, 0x41, 0x20,
+    // add rsp, 38h
+    0x48, 0x83, 0xC4, 0x38,
+    // ret
+    0xC3,
+};
 
 using NtCreateThreadExFn = NTSTATUS(NTAPI*)(PHANDLE ThreadHandle,
                                             ACCESS_MASK DesiredAccess,
@@ -144,13 +209,13 @@ bool WaitForRemoteModuleLoad(DWORD targetPid, const wchar_t* dllPath)
     return false;
 }
 
-bool QueueLoadLibraryApc(DWORD targetPid,
-                         const wchar_t* dllPath,
-                         LPTHREAD_START_ROUTINE startRoutine,
-                         LPVOID argument,
-                         bool& canReleaseRemoteArgument)
+bool QueueRemoteRoutineApc(DWORD targetPid,
+                           const wchar_t* dllPath,
+                           LPTHREAD_START_ROUTINE startRoutine,
+                           LPVOID argument,
+                           bool& canReleaseRemoteArgument)
 {
-    wprintf(L"Queueing LoadLibraryW APCs with QueueUserAPC.\n");
+    wprintf(L"Queueing remote routine APCs with QueueUserAPC.\n");
 
     canReleaseRemoteArgument = true;
 
@@ -204,22 +269,22 @@ bool QueueLoadLibraryApc(DWORD targetPid,
 
     if (WaitForRemoteModuleLoad(targetPid, dllPath))
     {
-        wprintf(L"Leaving the remote DLL path buffer allocated because other queued APCs may dispatch later.\n");
+        wprintf(L"Leaving the remote APC argument allocated because other queued APCs may dispatch later.\n");
         return true;
     }
 
     wprintf(L"DLL load was not observed. QueueUserAPC only runs when a target thread enters an alertable wait.\n");
-    wprintf(L"Leaving the remote DLL path buffer allocated because a queued APC may still dispatch later.\n");
+    wprintf(L"Leaving the remote APC argument allocated because a queued APC may still dispatch later.\n");
     return false;
 }
 
-bool LaunchLoadLibrary(HANDLE process,
-                       DWORD targetPid,
-                       const wchar_t* dllPath,
-                       LPTHREAD_START_ROUTINE startRoutine,
-                       LPVOID argument,
-                       LaunchMethod launchMethod,
-                       bool& canReleaseRemoteArgument)
+bool LaunchRemoteRoutine(HANDLE process,
+                         DWORD targetPid,
+                         const wchar_t* dllPath,
+                         LPTHREAD_START_ROUTINE startRoutine,
+                         LPVOID argument,
+                         LaunchMethod launchMethod,
+                         bool& canReleaseRemoteArgument)
 {
     canReleaseRemoteArgument = true;
 
@@ -232,11 +297,11 @@ bool LaunchLoadLibrary(HANDLE process,
         return LaunchWithNtCreateThreadEx(process, startRoutine, argument);
 
     case LaunchMethod::QueueUserAPC:
-        return QueueLoadLibraryApc(targetPid,
-                                   dllPath,
-                                   startRoutine,
-                                   argument,
-                                   canReleaseRemoteArgument);
+        return QueueRemoteRoutineApc(targetPid,
+                                     dllPath,
+                                     startRoutine,
+                                     argument,
+                                     canReleaseRemoteArgument);
 
     default:
         wprintf(L"Unsupported launch method.\n");
@@ -258,24 +323,22 @@ const wchar_t* LaunchMethodName(LaunchMethod launchMethod)
         return L"unknown";
     }
 }
+
+const wchar_t* LoadMethodName(LoadMethod loadMethod)
+{
+    switch (loadMethod)
+    {
+    case LoadMethod::LoadLibraryW:
+        return L"LoadLibraryW";
+    case LoadMethod::LdrLoadDll:
+        return L"LdrLoadDll";
+    default:
+        return L"unknown";
+    }
 }
 
-bool InjectDllWithLoadLibrary(DWORD targetPid,
-                              const wchar_t* dllPath,
-                              LaunchMethod launchMethod)
+UniqueHandle OpenTargetProcessForInjection(DWORD targetPid)
 {
-    std::uintptr_t existingModule = 0;
-    if (FindRemoteModuleByPath(targetPid, dllPath, existingModule))
-    {
-        wprintf(L"%s is already loaded in the target at 0x%p.\n",
-                dllPath,
-                reinterpret_cast<void*>(existingModule));
-        wprintf(L"LoadLibraryW would only increment the loader reference count; "
-                L"DllMain(DLL_PROCESS_ATTACH) will not run again.\n");
-        wprintf(L"Restart TargetApp to repeat the visible MessageBox demo.\n");
-        return true;
-    }
-
     UniqueHandle process(OpenProcess(PROCESS_CREATE_THREAD |
                                          PROCESS_QUERY_INFORMATION |
                                          PROCESS_VM_OPERATION |
@@ -286,6 +349,34 @@ bool InjectDllWithLoadLibrary(DWORD targetPid,
     if (!process.valid())
     {
         PrintLastError(L"OpenProcess");
+    }
+
+    return process;
+}
+
+bool ReleaseRemoteAllocation(HANDLE process, LPVOID allocation, const wchar_t* name)
+{
+    if (allocation == nullptr)
+    {
+        return true;
+    }
+
+    if (!VirtualFreeEx(process, allocation, 0, MEM_RELEASE))
+    {
+        PrintLastError(name);
+        return false;
+    }
+
+    return true;
+}
+
+bool InjectDllWithLoadLibraryInternal(DWORD targetPid,
+                                      const wchar_t* dllPath,
+                                      LaunchMethod launchMethod)
+{
+    UniqueHandle process = OpenTargetProcessForInjection(targetPid);
+    if (!process.valid())
+    {
         return false;
     }
 
@@ -317,13 +408,13 @@ bool InjectDllWithLoadLibrary(DWORD targetPid,
     }
 
     bool canReleaseRemoteDllPath = true;
-    if (!LaunchLoadLibrary(process.get(),
-                           targetPid,
-                           dllPath,
-                           remoteLoadLibraryW,
-                           remoteDllPath,
-                           launchMethod,
-                           canReleaseRemoteDllPath))
+    if (!LaunchRemoteRoutine(process.get(),
+                             targetPid,
+                             dllPath,
+                             remoteLoadLibraryW,
+                             remoteDllPath,
+                             launchMethod,
+                             canReleaseRemoteDllPath))
     {
         if (canReleaseRemoteDllPath)
         {
@@ -341,6 +432,235 @@ bool InjectDllWithLoadLibrary(DWORD targetPid,
             L"Check TargetApp for detection rows and the message box.\n",
             LaunchMethodName(launchMethod));
     return true;
+}
+
+bool PrepareLdrLoadDllContext(DWORD targetPid,
+                              const wchar_t* dllPath,
+                              std::uintptr_t remoteContextAddress,
+                              LdrLoadDllRemoteContext& context)
+{
+    LPTHREAD_START_ROUTINE remoteLdrLoadDll =
+        ResolveRemoteProcAddress(targetPid, L"ntdll.dll", "LdrLoadDll");
+    if (!remoteLdrLoadDll)
+    {
+        return false;
+    }
+
+    const std::size_t pathCharacterCount = wcslen(dllPath) + 1;
+    if (pathCharacterCount > _countof(context.dll_path))
+    {
+        wprintf(L"DLL path is too long for the beginner LdrLoadDll context.\n");
+        return false;
+    }
+
+    const std::size_t pathBytesWithoutNull = (pathCharacterCount - 1) * sizeof(wchar_t);
+    const std::size_t pathBytesWithNull = pathCharacterCount * sizeof(wchar_t);
+    if (pathBytesWithNull > USHRT_MAX)
+    {
+        wprintf(L"DLL path is too long for UNICODE_STRING in this lab.\n");
+        return false;
+    }
+
+    context = {};
+    context.ldr_load_dll = reinterpret_cast<std::uintptr_t>(remoteLdrLoadDll);
+    context.dll_name.length = static_cast<USHORT>(pathBytesWithoutNull);
+    context.dll_name.maximum_length = static_cast<USHORT>(pathBytesWithNull);
+    context.dll_name.buffer =
+        remoteContextAddress + offsetof(LdrLoadDllRemoteContext, dll_path);
+
+    if (wcscpy_s(context.dll_path, _countof(context.dll_path), dllPath) != 0)
+    {
+        wprintf(L"Failed to copy DLL path into LdrLoadDll context.\n");
+        return false;
+    }
+
+    return true;
+}
+
+bool InjectDllWithLdrLoadDll(DWORD targetPid,
+                             const wchar_t* dllPath,
+                             LaunchMethod launchMethod)
+{
+    UniqueHandle process = OpenTargetProcessForInjection(targetPid);
+    if (!process.valid())
+    {
+        return false;
+    }
+
+    LPVOID remoteStub = VirtualAllocEx(process.get(),
+                                       nullptr,
+                                       sizeof(kLdrLoadDllStub),
+                                       MEM_COMMIT | MEM_RESERVE,
+                                       PAGE_READWRITE);
+    if (!remoteStub)
+    {
+        PrintLastError(L"VirtualAllocEx(LdrLoadDll stub)");
+        return false;
+    }
+
+    if (!WriteProcessMemory(process.get(),
+                            remoteStub,
+                            kLdrLoadDllStub,
+                            sizeof(kLdrLoadDllStub),
+                            nullptr))
+    {
+        PrintLastError(L"WriteProcessMemory(LdrLoadDll stub)");
+        ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(LdrLoadDll stub)");
+        return false;
+    }
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtectEx(process.get(),
+                          remoteStub,
+                          sizeof(kLdrLoadDllStub),
+                          PAGE_EXECUTE_READ,
+                          &oldProtect))
+    {
+        PrintLastError(L"VirtualProtectEx(LdrLoadDll stub)");
+        ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(LdrLoadDll stub)");
+        return false;
+    }
+
+    LPVOID remoteContext = VirtualAllocEx(process.get(),
+                                          nullptr,
+                                          sizeof(LdrLoadDllRemoteContext),
+                                          MEM_COMMIT | MEM_RESERVE,
+                                          PAGE_READWRITE);
+    if (!remoteContext)
+    {
+        PrintLastError(L"VirtualAllocEx(LdrLoadDll context)");
+        ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(LdrLoadDll stub)");
+        return false;
+    }
+
+    LdrLoadDllRemoteContext context = {};
+    if (!PrepareLdrLoadDllContext(targetPid,
+                                  dllPath,
+                                  reinterpret_cast<std::uintptr_t>(remoteContext),
+                                  context))
+    {
+        ReleaseRemoteAllocation(process.get(), remoteContext, L"VirtualFreeEx(LdrLoadDll context)");
+        ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(LdrLoadDll stub)");
+        return false;
+    }
+
+    if (!WriteProcessMemory(process.get(),
+                            remoteContext,
+                            &context,
+                            sizeof(context),
+                            nullptr))
+    {
+        PrintLastError(L"WriteProcessMemory(LdrLoadDll context)");
+        ReleaseRemoteAllocation(process.get(), remoteContext, L"VirtualFreeEx(LdrLoadDll context)");
+        ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(LdrLoadDll stub)");
+        return false;
+    }
+
+    wprintf(L"Staged LdrLoadDll context at 0x%p and x64 adapter stub at 0x%p.\n",
+            remoteContext,
+            remoteStub);
+
+    bool canReleaseRemoteState = true;
+    if (!LaunchRemoteRoutine(process.get(),
+                             targetPid,
+                             dllPath,
+                             reinterpret_cast<LPTHREAD_START_ROUTINE>(remoteStub),
+                             remoteContext,
+                             launchMethod,
+                             canReleaseRemoteState))
+    {
+        if (canReleaseRemoteState)
+        {
+            ReleaseRemoteAllocation(process.get(), remoteContext, L"VirtualFreeEx(LdrLoadDll context)");
+            ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(LdrLoadDll stub)");
+        }
+        return false;
+    }
+
+    LdrLoadDllRemoteContext completedContext = {};
+    if (ReadProcessMemory(process.get(),
+                          remoteContext,
+                          &completedContext,
+                          sizeof(completedContext),
+                          nullptr))
+    {
+        wprintf(L"LdrLoadDll returned NTSTATUS 0x%08lX, module handle 0x%p.\n",
+                static_cast<unsigned long>(completedContext.status),
+                reinterpret_cast<void*>(completedContext.module_handle));
+
+        if (!NtSuccess(completedContext.status))
+        {
+            PrintNtStatus(L"remote LdrLoadDll", completedContext.status);
+            if (canReleaseRemoteState)
+            {
+                ReleaseRemoteAllocation(process.get(), remoteContext, L"VirtualFreeEx(LdrLoadDll context)");
+                ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(LdrLoadDll stub)");
+            }
+            return false;
+        }
+    }
+    else
+    {
+        PrintLastError(L"ReadProcessMemory(LdrLoadDll context)");
+    }
+
+    if (canReleaseRemoteState)
+    {
+        ReleaseRemoteAllocation(process.get(), remoteContext, L"VirtualFreeEx(LdrLoadDll context)");
+        ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(LdrLoadDll stub)");
+    }
+    else
+    {
+        wprintf(L"Leaving the remote LdrLoadDll stub and context allocated because queued APCs may dispatch later.\n");
+    }
+
+    wprintf(L"Remote LdrLoadDll launched with %s finished. "
+            L"Check TargetApp for detection rows and the message box.\n",
+            LaunchMethodName(launchMethod));
+    return true;
+}
+}
+
+bool InjectDll(DWORD targetPid,
+               const wchar_t* dllPath,
+               LoadMethod loadMethod,
+               LaunchMethod launchMethod)
+{
+    std::uintptr_t existingModule = 0;
+    if (FindRemoteModuleByPath(targetPid, dllPath, existingModule))
+    {
+        wprintf(L"%s is already loaded in the target at 0x%p.\n",
+                dllPath,
+                reinterpret_cast<void*>(existingModule));
+        wprintf(L"%s would only increment the loader reference count; "
+                L"DllMain(DLL_PROCESS_ATTACH) will not run again.\n",
+                LoadMethodName(loadMethod));
+        wprintf(L"Restart TargetApp to repeat the visible MessageBox demo.\n");
+        return true;
+    }
+
+    switch (loadMethod)
+    {
+    case LoadMethod::LoadLibraryW:
+        return InjectDllWithLoadLibraryInternal(targetPid, dllPath, launchMethod);
+
+    case LoadMethod::LdrLoadDll:
+        return InjectDllWithLdrLoadDll(targetPid, dllPath, launchMethod);
+
+    default:
+        wprintf(L"Unsupported load method.\n");
+        return false;
+    }
+}
+
+bool InjectDllWithLoadLibrary(DWORD targetPid,
+                              const wchar_t* dllPath,
+                              LaunchMethod launchMethod)
+{
+    return InjectDll(targetPid,
+                     dllPath,
+                     LoadMethod::LoadLibraryW,
+                     launchMethod);
 }
 
 bool InjectDllWithLoadLibraryRemoteThread(DWORD targetPid, const wchar_t* dllPath)

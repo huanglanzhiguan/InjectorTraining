@@ -243,6 +243,7 @@ Artifacts to compare against Lesson 5:
 - similar image-load telemetry
 - different call path into `ntdll`
 - different setup data for the loader call
+- extra private executable memory for the beginner remote adapter stub
 
 Deliverable:
 
@@ -533,13 +534,14 @@ Suggested command style:
 InjectorLab.exe --target app --load LoadLibraryW --launch CreateRemoteThread --dll TrainingDll.dll
 InjectorLab.exe --target app --load LoadLibraryW --launch NtCreateThreadEx --dll TrainingDll.dll
 InjectorLab.exe --target app --load LoadLibraryW --launch QueueUserAPC --dll TrainingDll.dll
+InjectorLab.exe --target app --load LdrLoadDll --launch CreateRemoteThread --dll TrainingDll.dll
 InjectorLab.exe --target app --load LdrLoadDll --launch QueueUserAPC --dll TrainingDll.dll
 InjectorLab.exe --target app --load ManualMap --launch ThreadHijack --dll TrainingDll.dll
 ```
 
 The command syntax should make the two axes obvious.
 
-The first implementation supports `--load LoadLibraryW` with `--launch CreateRemoteThread`, `--launch NtCreateThreadEx`, or `--launch QueueUserAPC`. That gives students early same-load/different-launch comparisons before the course moves into other load methods, hijacking, hooks, and manual mapping. The unsupported combinations are intentionally named early so the CLI can grow with the lessons.
+The implementation now supports `--load LoadLibraryW` and `--load LdrLoadDll` with `--launch CreateRemoteThread`, `--launch NtCreateThreadEx`, or `--launch QueueUserAPC`. That gives students both comparison axes: same-load/different-launch and same-launch/different-load. The unsupported combinations are intentionally named early so the CLI can grow with the lessons.
 
 ## What To Avoid In The Lessons
 
