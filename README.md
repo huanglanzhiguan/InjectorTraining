@@ -104,6 +104,12 @@ The APC launch lab uses the same staged DLL path and loader call, but asks an ex
 
 `TargetApp.exe` includes one alertable APC worker thread so this beginner lab is deterministic. Against an arbitrary already-running process, `QueueUserAPC` may queue successfully and still never execute if no target thread enters an alertable wait.
 
+For a controlled APC run, copy the `alertable APC worker TID` shown in the `TargetApp.exe` header and pass it explicitly:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch QueueUserAPC --apc-thread <tid> --dll .\x64\Debug\TrainingDll.dll
+```
+
 To compare the next load method, keep the launch method familiar and switch the loader entry point:
 
 ```powershell
@@ -298,11 +304,18 @@ The current lab command is:
 .\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch QueueUserAPC --dll .\x64\Debug\TrainingDll.dll
 ```
 
+To queue only to the known alertable worker thread, copy its TID from the `TargetApp.exe` header:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch QueueUserAPC --apc-thread <tid> --dll .\x64\Debug\TrainingDll.dll
+```
+
 How it works:
 
 - The injector queues a user-mode APC to a target thread.
 - The APC routine runs when the target thread enters an alertable wait.
 - `TargetApp.exe` creates one lab-owned worker thread that waits with `WaitForSingleObjectEx(..., TRUE)` so students can observe a reliable dispatch case.
+- Without `--apc-thread`, the injector queues to every thread in the target for the naive comparison.
 - Early-bird APC variants queue work before the main thread begins normal execution, then resume the process.
 
 What to observe:
@@ -317,7 +330,7 @@ Limitations:
 - Normal user-mode APCs require alertable execution.
 - Many target threads never enter an alertable wait at the right time.
 - The APC routine address must be valid in the target.
-- Freeing the remote argument buffer is unsafe while any queued APC might still run later, so this lab intentionally leaves it allocated for APC launches.
+- Freeing the remote argument buffer is unsafe while any queued APC might still run later. Even in single-thread mode, `QueueUserAPC` does not provide a completion handle for the APC routine, so this lab intentionally leaves APC arguments allocated.
 - Complex work can corrupt program assumptions if it runs at an unexpected time.
 - Cross-bitness and WOW64 transitions add complexity.
 

@@ -292,6 +292,7 @@ Lab shape:
 - one target thread that enters alertable wait
 - one target thread that does not
 - compare whether the queued routine runs
+- compare naive all-thread queueing with `--apc-thread <tid>` against the known alertable worker
 
 Artifacts to inspect:
 

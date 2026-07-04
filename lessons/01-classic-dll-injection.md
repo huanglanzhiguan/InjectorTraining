@@ -168,6 +168,12 @@ The lab also supports the APC launch path for the later APC lesson:
 
 That command still uses `LoadLibraryW`, but it does not create a new loader thread. It queues the call to an existing alertable worker thread in `TargetApp.exe`.
 
+For a controlled APC run, copy the `alertable APC worker TID` from the target header and pass it explicitly:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load LoadLibraryW --launch QueueUserAPC --apc-thread <tid> --dll .\x64\Debug\TrainingDll.dll
+```
+
 For the native-loader comparison, switch `--load` and keep the launch method simple:
 
 ```powershell

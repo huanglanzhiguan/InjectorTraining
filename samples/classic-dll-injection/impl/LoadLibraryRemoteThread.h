@@ -17,12 +17,23 @@ enum class LaunchMethod
     QueueUserAPC
 };
 
+struct QueueUserApcConfig
+{
+    DWORD threadId = 0;
+};
+
+struct InjectorConfig
+{
+    LoadMethod loadMethod = LoadMethod::LoadLibraryW;
+    LaunchMethod launchMethod = LaunchMethod::CreateRemoteThread;
+    QueueUserApcConfig queueUserApc;
+};
+
 bool InjectDllWithLoadLibraryRemoteThread(DWORD targetPid, const wchar_t* dllPath);
 bool InjectDll(DWORD targetPid,
                const wchar_t* dllPath,
-               LoadMethod loadMethod,
-               LaunchMethod launchMethod);
+               const InjectorConfig& config);
 bool InjectDllWithLoadLibrary(DWORD targetPid,
                               const wchar_t* dllPath,
-                              LaunchMethod launchMethod);
+                              const InjectorConfig& config);
 }

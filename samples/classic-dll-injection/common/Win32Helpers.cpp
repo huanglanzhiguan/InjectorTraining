@@ -31,6 +31,32 @@ static bool GetModuleFileBaseName(HMODULE module, wchar_t* output, DWORD outputC
     return true;
 }
 
+static UniqueHandle CreateModuleSnapshot(DWORD pid)
+{
+    DWORD last_error = ERROR_SUCCESS;
+
+    for (int attempt = 0; attempt < 5; ++attempt)
+    {
+        UniqueHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid));
+        if (snapshot.valid())
+        {
+            return snapshot;
+        }
+
+        last_error = GetLastError();
+        if (last_error != ERROR_BAD_LENGTH)
+        {
+            break;
+        }
+
+        Sleep(25);
+    }
+
+    SetLastError(last_error);
+    PrintLastError(L"CreateToolhelp32Snapshot(modules)");
+    return UniqueHandle();
+}
+
 void PrintLastError(const wchar_t* action)
 {
     wprintf(L"%s failed. GetLastError() = %lu\n", action, GetLastError());
@@ -76,10 +102,9 @@ bool BuildSystemExecutablePath(const wchar_t* exeName, wchar_t* output, DWORD ou
 
 std::uintptr_t FindRemoteModuleBase(DWORD pid, const wchar_t* moduleName)
 {
-    UniqueHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid));
+    UniqueHandle snapshot = CreateModuleSnapshot(pid);
     if (!snapshot.valid())
     {
-        PrintLastError(L"CreateToolhelp32Snapshot");
         return 0;
     }
 
@@ -108,10 +133,9 @@ bool FindRemoteModuleByPath(DWORD pid, const wchar_t* modulePath, std::uintptr_t
 {
     moduleBase = 0;
 
-    UniqueHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid));
+    UniqueHandle snapshot = CreateModuleSnapshot(pid);
     if (!snapshot.valid())
     {
-        PrintLastError(L"CreateToolhelp32Snapshot");
         return false;
     }
 

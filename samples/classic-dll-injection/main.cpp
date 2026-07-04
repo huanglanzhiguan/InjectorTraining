@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include <cwchar>
+#include <cstdlib>
 #include <string>
 
 namespace
@@ -20,19 +21,21 @@ struct LabOptions
     const wchar_t* target = kDefaultTarget;
     const wchar_t* loadMethod = kDefaultLoadMethod;
     const wchar_t* launchMethod = kDefaultLaunchMethod;
+    DWORD apcThreadId = 0;
     bool showHelp = false;
 };
 
 void PrintUsage(const wchar_t* programName)
 {
     wprintf(L"Usage:\n");
-    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW|LdrLoadDll] [--launch CreateRemoteThread|NtCreateThreadEx|QueueUserAPC]\n",
+    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW|LdrLoadDll] [--launch CreateRemoteThread|NtCreateThreadEx|QueueUserAPC] [--apc-thread tid]\n",
             programName);
     wprintf(L"  %s <path-to-dll>  (legacy shorthand)\n\n", programName);
     wprintf(L"Defaults:\n");
     wprintf(L"  --target app                 alias for TargetApp.exe\n");
     wprintf(L"  --load LoadLibraryW\n");
     wprintf(L"  --launch CreateRemoteThread\n");
+    wprintf(L"  --apc-thread 0               QueueUserAPC uses all target threads\n");
 }
 
 bool IsOption(const wchar_t* value, const wchar_t* optionName)
@@ -49,6 +52,19 @@ bool ReadOptionValue(int argc, wchar_t** argv, int& index, const wchar_t* option
     }
 
     *value = argv[++index];
+    return true;
+}
+
+bool TryParseThreadId(const wchar_t* value, DWORD& threadId)
+{
+    wchar_t* end = nullptr;
+    const unsigned long parsed = wcstoul(value, &end, 10);
+    if (value[0] == L'\0' || end == value || *end != L'\0' || parsed == 0)
+    {
+        return false;
+    }
+
+    threadId = static_cast<DWORD>(parsed);
     return true;
 }
 
@@ -93,6 +109,20 @@ bool ParseOptions(int argc, wchar_t** argv, LabOptions& options)
         {
             if (!ReadOptionValue(argc, argv, i, L"--launch", &options.launchMethod))
             {
+                return false;
+            }
+        }
+        else if (IsOption(argv[i], L"--apc-thread"))
+        {
+            const wchar_t* value = nullptr;
+            if (!ReadOptionValue(argc, argv, i, L"--apc-thread", &value))
+            {
+                return false;
+            }
+
+            if (!TryParseThreadId(value, options.apcThreadId))
+            {
+                wprintf(L"Invalid --apc-thread value: %s\n", value);
                 return false;
             }
         }
@@ -168,24 +198,29 @@ bool TryParseLoadMethod(const wchar_t* value, lab::LoadMethod& loadMethod)
     return false;
 }
 
-bool ValidateMethodSelection(const LabOptions& options,
-                             lab::LoadMethod& loadMethod,
-                             lab::LaunchMethod& launchMethod)
+bool ValidateMethodSelection(const LabOptions& options, lab::InjectorConfig& config)
 {
-    if (!TryParseLoadMethod(options.loadMethod, loadMethod))
+    if (!TryParseLoadMethod(options.loadMethod, config.loadMethod))
     {
         wprintf(L"Unsupported --load %s. Available now: LoadLibraryW, LdrLoadDll.\n",
                 options.loadMethod);
         return false;
     }
 
-    if (!TryParseLaunchMethod(options.launchMethod, launchMethod))
+    if (!TryParseLaunchMethod(options.launchMethod, config.launchMethod))
     {
         wprintf(L"Unsupported --launch %s. Available now: CreateRemoteThread, NtCreateThreadEx, QueueUserAPC.\n",
                 options.launchMethod);
         return false;
     }
 
+    if (options.apcThreadId != 0 && config.launchMethod != lab::LaunchMethod::QueueUserAPC)
+    {
+        wprintf(L"--apc-thread only applies to --launch QueueUserAPC.\n");
+        return false;
+    }
+
+    config.queueUserApc.threadId = options.apcThreadId;
     return true;
 }
 }
@@ -205,9 +240,8 @@ int wmain(int argc, wchar_t** argv)
         return 0;
     }
 
-    lab::LoadMethod loadMethod = lab::LoadMethod::LoadLibraryW;
-    lab::LaunchMethod launchMethod = lab::LaunchMethod::CreateRemoteThread;
-    if (!ValidateMethodSelection(options, loadMethod, launchMethod))
+    lab::InjectorConfig config;
+    if (!ValidateMethodSelection(options, config))
     {
         return 1;
     }
@@ -223,6 +257,10 @@ int wmain(int argc, wchar_t** argv)
     wprintf(L"Target: %s\n", targetImageName.c_str());
     wprintf(L"Load method: %s\n", options.loadMethod);
     wprintf(L"Launch method: %s\n", options.launchMethod);
+    if (options.apcThreadId != 0)
+    {
+        wprintf(L"APC thread: %lu\n", options.apcThreadId);
+    }
     wprintf(L"DLL: %s\n", dllPath);
 
     DWORD targetPid = 0;
@@ -231,7 +269,7 @@ int wmain(int argc, wchar_t** argv)
         return 1;
     }
 
-    if (!lab::InjectDll(targetPid, dllPath, loadMethod, launchMethod))
+    if (!lab::InjectDll(targetPid, dllPath, config))
     {
         return 1;
     }

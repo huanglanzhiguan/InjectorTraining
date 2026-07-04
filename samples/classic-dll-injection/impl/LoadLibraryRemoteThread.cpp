@@ -4,6 +4,7 @@
 #include "../common/TargetProcess.h"
 #include "../common/Win32Helpers.h"
 
+#include <algorithm>
 #include <climits>
 #include <cstddef>
 #include <cstdio>
@@ -213,17 +214,39 @@ bool QueueRemoteRoutineApc(DWORD targetPid,
                            const wchar_t* dllPath,
                            LPTHREAD_START_ROUTINE startRoutine,
                            LPVOID argument,
+                           DWORD apcThreadId,
                            bool& canReleaseRemoteArgument)
 {
     wprintf(L"Queueing remote routine APCs with QueueUserAPC.\n");
 
     canReleaseRemoteArgument = true;
 
-    const std::vector<DWORD> threadIds = EnumerateThreadIdsForProcess(targetPid);
-    if (threadIds.empty())
+    const std::vector<DWORD> targetThreadIds = EnumerateThreadIdsForProcess(targetPid);
+    if (targetThreadIds.empty())
     {
         wprintf(L"No target threads found for PID %lu.\n", targetPid);
         return false;
+    }
+
+    std::vector<DWORD> threadIds;
+    if (apcThreadId != 0)
+    {
+        if (std::find(targetThreadIds.begin(), targetThreadIds.end(), apcThreadId) == targetThreadIds.end())
+        {
+            wprintf(L"Requested APC thread %lu does not belong to target PID %lu.\n",
+                    apcThreadId,
+                    targetPid);
+            return false;
+        }
+
+        threadIds.push_back(apcThreadId);
+        wprintf(L"Using requested target thread %lu for this APC launch.\n", apcThreadId);
+    }
+    else
+    {
+        threadIds = targetThreadIds;
+        wprintf(L"No --apc-thread specified; queueing to all %zu target thread(s).\n",
+                threadIds.size());
     }
 
     DWORD queuedCount = 0;
@@ -267,14 +290,29 @@ bool QueueRemoteRoutineApc(DWORD targetPid,
             queuedCount,
             kApcLoadWaitTimeoutMs);
 
+    const bool singleThreadApc = apcThreadId != 0;
     if (WaitForRemoteModuleLoad(targetPid, dllPath))
     {
-        wprintf(L"Leaving the remote APC argument allocated because other queued APCs may dispatch later.\n");
+        if (singleThreadApc)
+        {
+            wprintf(L"Leaving the remote APC argument allocated because QueueUserAPC does not provide a completion handle for the APC routine.\n");
+        }
+        else
+        {
+            wprintf(L"Leaving the remote APC argument allocated because other queued APCs may dispatch later.\n");
+        }
         return true;
     }
 
     wprintf(L"DLL load was not observed. QueueUserAPC only runs when a target thread enters an alertable wait.\n");
-    wprintf(L"Leaving the remote APC argument allocated because a queued APC may still dispatch later.\n");
+    if (singleThreadApc)
+    {
+        wprintf(L"Leaving the remote APC argument allocated because the requested APC may still dispatch later.\n");
+    }
+    else
+    {
+        wprintf(L"Leaving the remote APC argument allocated because a queued APC may still dispatch later.\n");
+    }
     return false;
 }
 
@@ -283,12 +321,12 @@ bool LaunchRemoteRoutine(HANDLE process,
                          const wchar_t* dllPath,
                          LPTHREAD_START_ROUTINE startRoutine,
                          LPVOID argument,
-                         LaunchMethod launchMethod,
+                         const InjectorConfig& config,
                          bool& canReleaseRemoteArgument)
 {
     canReleaseRemoteArgument = true;
 
-    switch (launchMethod)
+    switch (config.launchMethod)
     {
     case LaunchMethod::CreateRemoteThread:
         return LaunchWithCreateRemoteThread(process, startRoutine, argument);
@@ -301,6 +339,7 @@ bool LaunchRemoteRoutine(HANDLE process,
                                      dllPath,
                                      startRoutine,
                                      argument,
+                                     config.queueUserApc.threadId,
                                      canReleaseRemoteArgument);
 
     default:
@@ -372,7 +411,7 @@ bool ReleaseRemoteAllocation(HANDLE process, LPVOID allocation, const wchar_t* n
 
 bool InjectDllWithLoadLibraryInternal(DWORD targetPid,
                                       const wchar_t* dllPath,
-                                      LaunchMethod launchMethod)
+                                      const InjectorConfig& config)
 {
     UniqueHandle process = OpenTargetProcessForInjection(targetPid);
     if (!process.valid())
@@ -413,7 +452,7 @@ bool InjectDllWithLoadLibraryInternal(DWORD targetPid,
                              dllPath,
                              remoteLoadLibraryW,
                              remoteDllPath,
-                             launchMethod,
+                             config,
                              canReleaseRemoteDllPath))
     {
         if (canReleaseRemoteDllPath)
@@ -430,7 +469,7 @@ bool InjectDllWithLoadLibraryInternal(DWORD targetPid,
 
     wprintf(L"Remote LoadLibraryW launched with %s finished. "
             L"Check TargetApp for detection rows and the message box.\n",
-            LaunchMethodName(launchMethod));
+            LaunchMethodName(config.launchMethod));
     return true;
 }
 
@@ -479,7 +518,7 @@ bool PrepareLdrLoadDllContext(DWORD targetPid,
 
 bool InjectDllWithLdrLoadDll(DWORD targetPid,
                              const wchar_t* dllPath,
-                             LaunchMethod launchMethod)
+                             const InjectorConfig& config)
 {
     UniqueHandle process = OpenTargetProcessForInjection(targetPid);
     if (!process.valid())
@@ -566,7 +605,7 @@ bool InjectDllWithLdrLoadDll(DWORD targetPid,
                              dllPath,
                              reinterpret_cast<LPTHREAD_START_ROUTINE>(remoteStub),
                              remoteContext,
-                             launchMethod,
+                             config,
                              canReleaseRemoteState))
     {
         if (canReleaseRemoteState)
@@ -611,20 +650,26 @@ bool InjectDllWithLdrLoadDll(DWORD targetPid,
     }
     else
     {
-        wprintf(L"Leaving the remote LdrLoadDll stub and context allocated because queued APCs may dispatch later.\n");
+        if (config.queueUserApc.threadId != 0)
+        {
+            wprintf(L"Leaving the remote LdrLoadDll stub and context allocated because QueueUserAPC does not provide a completion handle for the APC routine.\n");
+        }
+        else
+        {
+            wprintf(L"Leaving the remote LdrLoadDll stub and context allocated because queued APCs may dispatch later.\n");
+        }
     }
 
     wprintf(L"Remote LdrLoadDll launched with %s finished. "
             L"Check TargetApp for detection rows and the message box.\n",
-            LaunchMethodName(launchMethod));
+            LaunchMethodName(config.launchMethod));
     return true;
 }
 }
 
 bool InjectDll(DWORD targetPid,
                const wchar_t* dllPath,
-               LoadMethod loadMethod,
-               LaunchMethod launchMethod)
+               const InjectorConfig& config)
 {
     std::uintptr_t existingModule = 0;
     if (FindRemoteModuleByPath(targetPid, dllPath, existingModule))
@@ -634,18 +679,18 @@ bool InjectDll(DWORD targetPid,
                 reinterpret_cast<void*>(existingModule));
         wprintf(L"%s would only increment the loader reference count; "
                 L"DllMain(DLL_PROCESS_ATTACH) will not run again.\n",
-                LoadMethodName(loadMethod));
+                LoadMethodName(config.loadMethod));
         wprintf(L"Restart TargetApp to repeat the visible MessageBox demo.\n");
         return true;
     }
 
-    switch (loadMethod)
+    switch (config.loadMethod)
     {
     case LoadMethod::LoadLibraryW:
-        return InjectDllWithLoadLibraryInternal(targetPid, dllPath, launchMethod);
+        return InjectDllWithLoadLibraryInternal(targetPid, dllPath, config);
 
     case LoadMethod::LdrLoadDll:
-        return InjectDllWithLdrLoadDll(targetPid, dllPath, launchMethod);
+        return InjectDllWithLdrLoadDll(targetPid, dllPath, config);
 
     default:
         wprintf(L"Unsupported load method.\n");
@@ -655,18 +700,21 @@ bool InjectDll(DWORD targetPid,
 
 bool InjectDllWithLoadLibrary(DWORD targetPid,
                               const wchar_t* dllPath,
-                              LaunchMethod launchMethod)
+                              const InjectorConfig& config)
 {
-    return InjectDll(targetPid,
-                     dllPath,
-                     LoadMethod::LoadLibraryW,
-                     launchMethod);
+    InjectorConfig loadLibraryConfig = config;
+    loadLibraryConfig.loadMethod = LoadMethod::LoadLibraryW;
+    return InjectDll(targetPid, dllPath, loadLibraryConfig);
 }
 
 bool InjectDllWithLoadLibraryRemoteThread(DWORD targetPid, const wchar_t* dllPath)
 {
+    InjectorConfig config;
+    config.loadMethod = LoadMethod::LoadLibraryW;
+    config.launchMethod = LaunchMethod::CreateRemoteThread;
+
     return InjectDllWithLoadLibrary(targetPid,
                                     dllPath,
-                                    LaunchMethod::CreateRemoteThread);
+                                    config);
 }
 }
