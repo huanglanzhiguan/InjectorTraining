@@ -288,10 +288,11 @@ bool ValidateMethodSelection(const LabOptions& options, lab::InjectorConfig& con
 
     if (config.loadMethod == lab::LoadMethod::ManualMap &&
         config.launchMethod != lab::LaunchMethod::CreateRemoteThread &&
-        config.launchMethod != lab::LaunchMethod::NtCreateThreadEx)
+        config.launchMethod != lab::LaunchMethod::NtCreateThreadEx &&
+        config.launchMethod != lab::LaunchMethod::ThreadHijack)
     {
-        wprintf(L"--load ManualMap currently supports --launch CreateRemoteThread or NtCreateThreadEx. "
-                L"APC and thread-hijack completion need a different observation path because manual-mapped DLLs are not loader-visible.\n");
+        wprintf(L"--load ManualMap currently supports --launch CreateRemoteThread, NtCreateThreadEx, or ThreadHijack. "
+                L"APC completion still needs a different observation path because queued APCs may dispatch later.\n");
         return false;
     }
 

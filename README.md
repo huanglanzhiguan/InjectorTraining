@@ -140,9 +140,10 @@ Manual mapping changes the load method instead of calling the Windows loader for
 ```powershell
 .\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
 .\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch NtCreateThreadEx --dll .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch ThreadHijack --hijack-thread <tid> --dll .\x64\Debug\TrainingDll.dll
 ```
 
-This path reads the DLL file locally, lays it out like an image, applies relocations, resolves imports to target-process addresses, writes the mapped image into private target memory, protects sections, then runs TLS callbacks and the DLL entry point from a small init stub. APC and thread-hijack launch modes are intentionally left for a follow-up because manual-mapped DLLs do not appear in normal loader module enumeration, so our earlier "wait until module appears" completion signal does not apply.
+This path reads the DLL file locally, lays it out like an image, applies relocations, resolves imports to target-process addresses, writes the mapped image into private target memory, protects sections, then runs TLS callbacks and the DLL entry point from a small init stub. For thread hijacking, copy the `hijack demo worker TID` from `TargetApp.exe`; the manual-map init stub writes an explicit completion flag because manual-mapped DLLs do not appear in normal loader module enumeration.
 
 After students observe the baseline manual-map artifacts, rerun with PE-header erase to show how a specific memory-shape detector can be countered while broader private executable memory remains visible:
 
@@ -257,6 +258,7 @@ Current implemented load commands:
 .\x64\Debug\InjectorLab.exe --target app --load LdrpLoadDll --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
 .\x64\Debug\InjectorLab.exe --target app --load LdrpLoadDllInternal --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
 .\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch ThreadHijack --hijack-thread <tid> --dll .\x64\Debug\TrainingDll.dll
 .\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --manualmap-erase-headers --dll .\x64\Debug\TrainingDll.dll
 .\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --manualmap-fake-headers --dll .\x64\Debug\TrainingDll.dll
 ```
@@ -284,7 +286,7 @@ Limitations:
 - Using a local loader address as if it always matches the target is not robust; a reliable injector must reason about the target's loaded modules.
 - `Ldrp*` routines are private implementation details. This lab resolves them from the matching Microsoft PDB and restricts the call layout to Windows 10 1809+ x64 and Windows 11 x64 builds.
 - Going lower than `LoadLibraryExW` may change user-mode API telemetry, but it does not remove the core loader artifacts.
-- `ManualMap` currently handles x64 DLLs with base relocations, normal imports, section protections, TLS callbacks, and `DllMain`; delay imports, exception function-table registration, unload, and APC/hijack completion are follow-up topics.
+- `ManualMap` currently handles x64 DLLs with base relocations, normal imports, section protections, TLS callbacks, `DllMain`, and remote-thread/native-thread/thread-hijack launches; delay imports, exception function-table registration, unload, and APC completion are follow-up topics.
 
 Detection ideas:
 

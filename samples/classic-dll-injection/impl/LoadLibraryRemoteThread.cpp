@@ -22,6 +22,8 @@ namespace
 {
 constexpr DWORD kApcLoadWaitTimeoutMs = 5000;
 constexpr DWORD kApcLoadPollIntervalMs = 100;
+constexpr DWORD kManualMapCompletionWaitTimeoutMs = 5000;
+constexpr DWORD kManualMapCompletionPollIntervalMs = 50;
 constexpr ULONG kWindows10Build1809 = 17763;
 
 // PE TLS callbacks are a null-terminated pointer array; Windows does not impose
@@ -103,6 +105,7 @@ struct ManualMapRemoteContext
     std::uintptr_t tls_callbacks[kManualMapMaxTlsCallbacks] = {};
     DWORD tls_callback_count = 0;
     DWORD dllmain_result = 0;
+    DWORD completed = 0;
 };
 
 struct HijackRemoteContext
@@ -136,6 +139,7 @@ static_assert(offsetof(ManualMapRemoteContext, entry_point) == 0x08);
 static_assert(offsetof(ManualMapRemoteContext, tls_callbacks) == 0x10);
 static_assert(offsetof(ManualMapRemoteContext, tls_callback_count) == 0x90);
 static_assert(offsetof(ManualMapRemoteContext, dllmain_result) == 0x94);
+static_assert(offsetof(ManualMapRemoteContext, completed) == 0x98);
 static_assert(offsetof(HijackRemoteContext, original_context) == 0x20);
 
 // x64 adapter:
@@ -337,10 +341,12 @@ const unsigned char kLdrpLoadDllInternalStub[] = {
 //   calls every staged TLS callback with DLL_PROCESS_ATTACH
 //   calls the mapped image entry point with DLL_PROCESS_ATTACH
 //   stores the entry point BOOL result in ctx->dllmain_result
+//   stores ctx->completed = 1 immediately before returning
 //
 // The injector has already copied sections, applied relocations, and fixed the
 // IAT. This stub is intentionally small so students can separate "mapping PE
-// bytes" from "running the mapped image."
+// bytes" from "running the mapped image." The completion flag is what lets the
+// thread-hijack launch mode work without waiting for a loader-visible module.
 const unsigned char kManualMapInitStub[] = {
     // sub rsp, 58h
     0x48, 0x83, 0xEC, 0x58,
@@ -386,8 +392,8 @@ const unsigned char kManualMapInitStub[] = {
     0x49, 0x8B, 0x42, 0x08,
     // test rax, rax
     0x48, 0x85, 0xC0,
-    // jz +1Dh
-    0x74, 0x1D,
+    // jz +27h
+    0x74, 0x27,
     // mov rcx, [r10]
     0x49, 0x8B, 0x0A,
     // mov edx, 1
@@ -400,6 +406,8 @@ const unsigned char kManualMapInitStub[] = {
     0x48, 0x8B, 0x4C, 0x24, 0x48,
     // mov [rcx+94h], eax
     0x89, 0x81, 0x94, 0x00, 0x00, 0x00,
+    // mov dword ptr [rcx+98h], 1
+    0xC7, 0x81, 0x98, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
     // add rsp, 58h
     0x48, 0x83, 0xC4, 0x58,
     // ret
@@ -408,6 +416,8 @@ const unsigned char kManualMapInitStub[] = {
     0x48, 0x8B, 0x4C, 0x24, 0x48,
     // mov dword ptr [rcx+94h], 1
     0xC7, 0x81, 0x94, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    // mov dword ptr [rcx+98h], 1
+    0xC7, 0x81, 0x98, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
     // add rsp, 58h
     0x48, 0x83, 0xC4, 0x58,
     // ret
@@ -795,6 +805,7 @@ bool LaunchWithThreadHijack(HANDLE process,
                             LPTHREAD_START_ROUTINE startRoutine,
                             LPVOID argument,
                             DWORD hijackThreadId,
+                            bool waitForLoaderModule,
                             bool& canReleaseRemoteArgument)
 {
     wprintf(L"Hijacking an existing target thread with SuspendThread/GetThreadContext/SetThreadContext.\n");
@@ -955,6 +966,13 @@ bool LaunchWithThreadHijack(HANDLE process,
             remoteStub,
             remoteContext);
 
+    if (!waitForLoaderModule)
+    {
+        wprintf(L"Leaving the remote thread-hijack stub and context allocated for observation.\n");
+        wprintf(L"The selected load method is not loader-visible; caller will observe its own completion signal.\n");
+        return true;
+    }
+
     const bool observedLoad = WaitForRemoteModuleLoad(targetPid, dllPath);
     wprintf(L"Leaving the remote thread-hijack stub and context allocated for observation.\n");
 
@@ -973,7 +991,8 @@ bool LaunchRemoteRoutine(HANDLE process,
                          LPTHREAD_START_ROUTINE startRoutine,
                          LPVOID argument,
                          const InjectorConfig& config,
-                         bool& canReleaseRemoteArgument)
+                         bool& canReleaseRemoteArgument,
+                         bool waitForLoaderModule = true)
 {
     canReleaseRemoteArgument = true;
 
@@ -1000,6 +1019,7 @@ bool LaunchRemoteRoutine(HANDLE process,
                                       startRoutine,
                                       argument,
                                       config.threadHijack.threadId,
+                                      waitForLoaderModule,
                                       canReleaseRemoteArgument);
 
     default:
@@ -1859,6 +1879,40 @@ bool FakeManualMapHeaders(HANDLE process,
     return true;
 }
 
+bool WaitForManualMapCompletion(HANDLE process,
+                                LPVOID remoteContext,
+                                ManualMapRemoteContext& completedContext)
+{
+    const ULONGLONG deadline = GetTickCount64() + kManualMapCompletionWaitTimeoutMs;
+
+    for (;;)
+    {
+        if (!ReadProcessMemory(process,
+                               remoteContext,
+                               &completedContext,
+                               sizeof(completedContext),
+                               nullptr))
+        {
+            PrintLastError(L"ReadProcessMemory(ManualMap context)");
+            return false;
+        }
+
+        if (completedContext.completed != 0)
+        {
+            return true;
+        }
+
+        if (GetTickCount64() >= deadline)
+        {
+            wprintf(L"Timed out waiting for ManualMap init completion after %lu ms.\n",
+                    kManualMapCompletionWaitTimeoutMs);
+            return false;
+        }
+
+        Sleep(kManualMapCompletionPollIntervalMs);
+    }
+}
+
 bool PrepareManualMapRunContext(std::vector<unsigned char>& mappedImage,
                                 std::uintptr_t remoteImageBase,
                                 ManualMapRemoteContext& context)
@@ -2631,9 +2685,10 @@ bool InjectDllWithManualMap(DWORD targetPid,
                             const InjectorConfig& config)
 {
     if (config.launchMethod != LaunchMethod::CreateRemoteThread &&
-        config.launchMethod != LaunchMethod::NtCreateThreadEx)
+        config.launchMethod != LaunchMethod::NtCreateThreadEx &&
+        config.launchMethod != LaunchMethod::ThreadHijack)
     {
-        wprintf(L"ManualMap currently supports CreateRemoteThread and NtCreateThreadEx launches only.\n");
+        wprintf(L"ManualMap currently supports CreateRemoteThread, NtCreateThreadEx, and ThreadHijack launches only.\n");
         return false;
     }
 
@@ -2759,13 +2814,15 @@ bool InjectDllWithManualMap(DWORD targetPid,
             remoteStub);
 
     bool canReleaseRemoteState = true;
+    const bool waitForLoaderModule = false;
     if (!LaunchRemoteRoutine(process.get(),
                              targetPid,
                              dllPath,
                              reinterpret_cast<LPTHREAD_START_ROUTINE>(remoteStub),
                              remoteContext,
                              config,
-                             canReleaseRemoteState))
+                             canReleaseRemoteState,
+                             waitForLoaderModule))
     {
         if (canReleaseRemoteState)
         {
@@ -2777,13 +2834,8 @@ bool InjectDllWithManualMap(DWORD targetPid,
     }
 
     ManualMapRemoteContext completedContext = {};
-    if (!ReadProcessMemory(process.get(),
-                           remoteContext,
-                           &completedContext,
-                           sizeof(completedContext),
-                           nullptr))
+    if (!WaitForManualMapCompletion(process.get(), remoteContext, completedContext))
     {
-        PrintLastError(L"ReadProcessMemory(ManualMap context)");
         if (canReleaseRemoteState)
         {
             ReleaseRemoteAllocation(process.get(), remoteContext, L"VirtualFreeEx(ManualMap context)");
@@ -2796,6 +2848,10 @@ bool InjectDllWithManualMap(DWORD targetPid,
     {
         ReleaseRemoteAllocation(process.get(), remoteContext, L"VirtualFreeEx(ManualMap context)");
         ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(ManualMap init stub)");
+    }
+    else
+    {
+        wprintf(L"Leaving the remote ManualMap init stub and context allocated because ThreadHijack has no completion handle.\n");
     }
 
     if (completedContext.dllmain_result == 0)
