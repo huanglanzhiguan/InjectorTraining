@@ -543,11 +543,12 @@ InjectorLab.exe --target app --load LdrpLoadDll --launch CreateRemoteThread --dl
 InjectorLab.exe --target app --load LdrpLoadDllInternal --launch CreateRemoteThread --dll TrainingDll.dll
 InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --dll TrainingDll.dll
 InjectorLab.exe --target app --load ManualMap --launch NtCreateThreadEx --dll TrainingDll.dll
+InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --manualmap-erase-headers --dll TrainingDll.dll
 ```
 
 The command syntax should make the two axes obvious.
 
-The implementation now supports `--load LoadLibraryW`, `--load LdrLoadDll`, `--load LdrpLoadDll`, `--load LdrpLoadDllInternal`, and `--load ManualMap`. The private `Ldrp*` methods resolve exact RVAs from the matching local `ntdll.pdb` and currently target Windows 10 1809+ x64 and Windows 11 x64 call layouts. Manual mapping currently supports `CreateRemoteThread` and `NtCreateThreadEx`; APC and thread-hijack launch modes need a different completion signal because manual-mapped DLLs are not loader-visible.
+The implementation now supports `--load LoadLibraryW`, `--load LdrLoadDll`, `--load LdrpLoadDll`, `--load LdrpLoadDllInternal`, and `--load ManualMap`. The private `Ldrp*` methods resolve exact RVAs from the matching local `ntdll.pdb` and currently target Windows 10 1809+ x64 and Windows 11 x64 call layouts. Manual mapping currently supports `CreateRemoteThread` and `NtCreateThreadEx`; APC and thread-hijack launch modes need a different completion signal because manual-mapped DLLs are not loader-visible. `--manualmap-erase-headers` is a deliberate follow-up variant that zeroes the remote PE headers after initialization so students can compare narrow PE-shape detection against broader private executable memory detection.
 
 ## What To Avoid In The Lessons
 

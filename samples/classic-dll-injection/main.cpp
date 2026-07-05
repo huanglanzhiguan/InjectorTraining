@@ -23,13 +23,14 @@ struct LabOptions
     const wchar_t* launchMethod = kDefaultLaunchMethod;
     DWORD apcThreadId = 0;
     DWORD hijackThreadId = 0;
+    bool manualMapEraseHeaders = false;
     bool showHelp = false;
 };
 
 void PrintUsage(const wchar_t* programName)
 {
     wprintf(L"Usage:\n");
-    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW|LdrLoadDll|LdrpLoadDll|LdrpLoadDllInternal|ManualMap] [--launch CreateRemoteThread|NtCreateThreadEx|QueueUserAPC|ThreadHijack] [--apc-thread tid] [--hijack-thread tid]\n",
+    wprintf(L"  %s --dll <path> [--target app|image.exe] [--load LoadLibraryW|LdrLoadDll|LdrpLoadDll|LdrpLoadDllInternal|ManualMap] [--launch CreateRemoteThread|NtCreateThreadEx|QueueUserAPC|ThreadHijack] [--apc-thread tid] [--hijack-thread tid] [--manualmap-erase-headers]\n",
             programName);
     wprintf(L"  %s <path-to-dll>  (legacy shorthand)\n\n", programName);
     wprintf(L"Defaults:\n");
@@ -38,6 +39,7 @@ void PrintUsage(const wchar_t* programName)
     wprintf(L"  --launch CreateRemoteThread\n");
     wprintf(L"  --apc-thread 0               QueueUserAPC uses all target threads\n");
     wprintf(L"  --hijack-thread 0            ThreadHijack requires an explicit target thread\n");
+    wprintf(L"  --manualmap-erase-headers    disabled unless explicitly requested\n");
 }
 
 bool IsOption(const wchar_t* value, const wchar_t* optionName)
@@ -141,6 +143,11 @@ bool ParseOptions(int argc, wchar_t** argv, LabOptions& options)
                 wprintf(L"Invalid --hijack-thread value: %s\n", value);
                 return false;
             }
+        }
+        else if (IsOption(argv[i], L"--manualmap-erase-headers") ||
+                 IsOption(argv[i], L"--manualmap-erase-peh"))
+        {
+            options.manualMapEraseHeaders = true;
         }
         else
         {
@@ -281,8 +288,15 @@ bool ValidateMethodSelection(const LabOptions& options, lab::InjectorConfig& con
         return false;
     }
 
+    if (options.manualMapEraseHeaders && config.loadMethod != lab::LoadMethod::ManualMap)
+    {
+        wprintf(L"--manualmap-erase-headers only applies to --load ManualMap.\n");
+        return false;
+    }
+
     config.queueUserApc.threadId = options.apcThreadId;
     config.threadHijack.threadId = options.hijackThreadId;
+    config.manualMap.eraseHeaders = options.manualMapEraseHeaders;
     return true;
 }
 }
@@ -326,6 +340,10 @@ int wmain(int argc, wchar_t** argv)
     if (options.hijackThreadId != 0)
     {
         wprintf(L"Hijack thread: %lu\n", options.hijackThreadId);
+    }
+    if (config.manualMap.eraseHeaders)
+    {
+        wprintf(L"ManualMap PE header erase: enabled\n");
     }
     wprintf(L"DLL: %s\n", dllPath);
 

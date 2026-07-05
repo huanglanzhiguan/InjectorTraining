@@ -31,12 +31,18 @@ struct ThreadHijackConfig
     DWORD threadId = 0;
 };
 
+struct ManualMapConfig
+{
+    bool eraseHeaders = false;
+};
+
 struct InjectorConfig
 {
     LoadMethod loadMethod = LoadMethod::LoadLibraryW;
     LaunchMethod launchMethod = LaunchMethod::CreateRemoteThread;
     QueueUserApcConfig queueUserApc;
     ThreadHijackConfig threadHijack;
+    ManualMapConfig manualMap;
 };
 
 bool InjectDll(DWORD targetPid,

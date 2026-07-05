@@ -1698,6 +1698,64 @@ bool ProtectManualMapSections(HANDLE process,
     return true;
 }
 
+bool EraseManualMapHeaders(HANDLE process, LPVOID remoteImage, DWORD sizeOfHeaders)
+{
+    if (sizeOfHeaders == 0)
+    {
+        return true;
+    }
+
+    // PE-header erase is a post-initialization counter to simple "private
+    // memory still has MZ/PE headers" scanners. The image has already been
+    // relocated, imports are fixed, TLS callbacks have run, and DllMain has
+    // returned. After this point, removing the DOS header, NT header, and
+    // section table breaks PE-shape detection, but the allocation is still
+    // executable MEM_PRIVATE memory.
+    DWORD oldProtect = 0;
+    if (!VirtualProtectEx(process, remoteImage, sizeOfHeaders, PAGE_READWRITE, &oldProtect))
+    {
+        wprintf(L"VirtualProtectEx(ManualMap header erase) failed. GetLastError() = %lu\n",
+                GetLastError());
+        return false;
+    }
+
+    std::vector<unsigned char> zeroHeaders(sizeOfHeaders, 0);
+    SIZE_T bytesWritten = 0;
+    const bool wroteHeaders =
+        WriteProcessMemory(process,
+                           remoteImage,
+                           zeroHeaders.data(),
+                           zeroHeaders.size(),
+                           &bytesWritten) != FALSE &&
+        bytesWritten == zeroHeaders.size();
+
+    DWORD ignoredProtect = 0;
+    const bool restoredProtection =
+        VirtualProtectEx(process, remoteImage, sizeOfHeaders, oldProtect, &ignoredProtect) != FALSE;
+
+    if (!wroteHeaders)
+    {
+        wprintf(L"WriteProcessMemory(ManualMap header erase) failed. GetLastError() = %lu\n",
+                GetLastError());
+    }
+
+    if (!restoredProtection)
+    {
+        wprintf(L"VirtualProtectEx(ManualMap header restore) failed. GetLastError() = %lu\n",
+                GetLastError());
+    }
+
+    if (!wroteHeaders || !restoredProtection)
+    {
+        return false;
+    }
+
+    FlushInstructionCache(process, remoteImage, sizeOfHeaders);
+    wprintf(L"ManualMap erased 0x%lX byte(s) of PE headers in the remote image.\n",
+            sizeOfHeaders);
+    return true;
+}
+
 bool PrepareManualMapRunContext(std::vector<unsigned char>& mappedImage,
                                 std::uintptr_t remoteImageBase,
                                 ManualMapRemoteContext& context)
@@ -2640,6 +2698,14 @@ bool InjectDllWithManualMap(DWORD targetPid,
     if (completedContext.dllmain_result == 0)
     {
         wprintf(L"ManualMap entry point returned FALSE. Leaving the mapped image allocated for inspection.\n");
+        return false;
+    }
+
+    if (config.manualMap.eraseHeaders &&
+        !EraseManualMapHeaders(process.get(), remoteImage, nt->OptionalHeader.SizeOfHeaders))
+    {
+        wprintf(L"ManualMap initialized the DLL, but PE header erase failed. "
+                L"Leaving the mapped image allocated for inspection.\n");
         return false;
     }
 

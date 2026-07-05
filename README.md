@@ -144,6 +144,12 @@ Manual mapping changes the load method instead of calling the Windows loader for
 
 This path reads the DLL file locally, lays it out like an image, applies relocations, resolves imports to target-process addresses, writes the mapped image into private target memory, protects sections, then runs TLS callbacks and the DLL entry point from a small init stub. APC and thread-hijack launch modes are intentionally left for a follow-up because manual-mapped DLLs do not appear in normal loader module enumeration, so our earlier "wait until module appears" completion signal does not apply.
 
+After students observe the baseline manual-map artifacts, rerun with PE-header erase to show how a specific memory-shape detector can be countered while broader private executable memory remains visible:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --manualmap-erase-headers --dll .\x64\Debug\TrainingDll.dll
+```
+
 ## Mental Model
 
 Most user-mode injectors are combinations of five steps:
@@ -248,6 +254,7 @@ Current implemented load commands:
 .\x64\Debug\InjectorLab.exe --target app --load LdrpLoadDll --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
 .\x64\Debug\InjectorLab.exe --target app --load LdrpLoadDllInternal --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
 .\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --manualmap-erase-headers --dll .\x64\Debug\TrainingDll.dll
 ```
 
 `LoadLibraryW` can be launched directly with the DLL path as the one argument. `LdrLoadDll` needs the remote adapter stub because it expects native call data such as `UNICODE_STRING`. `LdrpLoadDll` and `LdrpLoadDllInternal` add an exact-PDB symbol resolution step because these private routines are not exported. `ManualMap` skips the normal loader for the training DLL and performs core PE loader work in the injector.
@@ -260,6 +267,7 @@ What to observe:
 - A new module visible in the target's loader list
 - Image-load telemetry for the DLL
 - With `ManualMap`, the training DLL should not appear as a normal loader-list module; look instead for private executable memory and thread starts in private image-like memory.
+- With `--manualmap-erase-headers`, the PE-like private image row should become harder to trigger because the remote `MZ`/`PE` headers and section table are zeroed after initialization.
 
 Limitations:
 
