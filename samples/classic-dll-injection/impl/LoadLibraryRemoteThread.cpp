@@ -11,6 +11,10 @@
 #include <cstdio>
 #include <cwchar>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <string>
+#include <vector>
 
 namespace lab
 {
@@ -19,6 +23,11 @@ namespace
 constexpr DWORD kApcLoadWaitTimeoutMs = 5000;
 constexpr DWORD kApcLoadPollIntervalMs = 100;
 constexpr ULONG kWindows10Build1809 = 17763;
+
+// PE TLS callbacks are a null-terminated pointer array; Windows does not impose
+// this small number. The fixed cap keeps the beginner remote context simple and
+// makes oversized cases fail loudly instead of silently skipping callbacks.
+constexpr std::size_t kManualMapMaxTlsCallbacks = 16;
 
 struct RemoteUnicodeString
 {
@@ -81,6 +90,15 @@ struct LdrpLoadDllInternalRemoteContext
     wchar_t dll_path[MAX_PATH] = {};
 };
 
+struct ManualMapRemoteContext
+{
+    std::uintptr_t image_base = 0;
+    std::uintptr_t entry_point = 0;
+    std::uintptr_t tls_callbacks[kManualMapMaxTlsCallbacks] = {};
+    DWORD tls_callback_count = 0;
+    DWORD dllmain_result = 0;
+};
+
 struct HijackRemoteContext
 {
     std::uintptr_t start_routine = 0;
@@ -108,6 +126,10 @@ static_assert(offsetof(LdrpLoadDllInternalRemoteContext, flags) == 0x1B8);
 static_assert(offsetof(LdrpLoadDllInternalRemoteContext, entry) == 0x1C0);
 static_assert(offsetof(LdrpLoadDllInternalRemoteContext, status) == 0x1C8);
 static_assert(offsetof(LdrpLoadDllInternalRemoteContext, dll_path) == 0x1D0);
+static_assert(offsetof(ManualMapRemoteContext, entry_point) == 0x08);
+static_assert(offsetof(ManualMapRemoteContext, tls_callbacks) == 0x10);
+static_assert(offsetof(ManualMapRemoteContext, tls_callback_count) == 0x90);
+static_assert(offsetof(ManualMapRemoteContext, dllmain_result) == 0x94);
 static_assert(offsetof(HijackRemoteContext, original_context) == 0x20);
 
 // x64 adapter:
@@ -298,6 +320,88 @@ const unsigned char kLdrpLoadDllInternalStub[] = {
     0x48, 0x89, 0xD1,
     // call rax
     0xFF, 0xD0,
+    // add rsp, 58h
+    0x48, 0x83, 0xC4, 0x58,
+    // ret
+    0xC3,
+};
+
+// x64 manual-map initializer:
+//   rcx = ManualMapRemoteContext*
+//   calls every staged TLS callback with DLL_PROCESS_ATTACH
+//   calls the mapped image entry point with DLL_PROCESS_ATTACH
+//   stores the entry point BOOL result in ctx->dllmain_result
+//
+// The injector has already copied sections, applied relocations, and fixed the
+// IAT. This stub is intentionally small so students can separate "mapping PE
+// bytes" from "running the mapped image."
+const unsigned char kManualMapInitStub[] = {
+    // sub rsp, 58h
+    0x48, 0x83, 0xEC, 0x58,
+    // mov [rsp+48h], rcx
+    0x48, 0x89, 0x4C, 0x24, 0x48,
+    // mov dword ptr [rsp+50h], 0
+    0xC7, 0x44, 0x24, 0x50, 0x00, 0x00, 0x00, 0x00,
+    // mov r10, [rsp+48h]
+    0x4C, 0x8B, 0x54, 0x24, 0x48,
+    // mov eax, [r10+90h]
+    0x41, 0x8B, 0x82, 0x90, 0x00, 0x00, 0x00,
+    // cmp [rsp+50h], eax
+    0x39, 0x44, 0x24, 0x50,
+    // jae +2Ch
+    0x73, 0x2C,
+    // mov eax, [rsp+50h]
+    0x8B, 0x44, 0x24, 0x50,
+    // mov r10, [rsp+48h]
+    0x4C, 0x8B, 0x54, 0x24, 0x48,
+    // mov rax, [r10+rax*8+10h]
+    0x49, 0x8B, 0x44, 0xC2, 0x10,
+    // test rax, rax
+    0x48, 0x85, 0xC0,
+    // jz +12h
+    0x74, 0x12,
+    // mov r10, [rsp+48h]
+    0x4C, 0x8B, 0x54, 0x24, 0x48,
+    // mov rcx, [r10]
+    0x49, 0x8B, 0x0A,
+    // mov edx, 1
+    0xBA, 0x01, 0x00, 0x00, 0x00,
+    // xor r8d, r8d
+    0x45, 0x33, 0xC0,
+    // call rax
+    0xFF, 0xD0,
+    // add dword ptr [rsp+50h], 1
+    0x83, 0x44, 0x24, 0x50, 0x01,
+    // jmp -3Eh
+    0xEB, 0xC2,
+    // mov r10, [rsp+48h]
+    0x4C, 0x8B, 0x54, 0x24, 0x48,
+    // mov rax, [r10+8]
+    0x49, 0x8B, 0x42, 0x08,
+    // test rax, rax
+    0x48, 0x85, 0xC0,
+    // jz +1Dh
+    0x74, 0x1D,
+    // mov rcx, [r10]
+    0x49, 0x8B, 0x0A,
+    // mov edx, 1
+    0xBA, 0x01, 0x00, 0x00, 0x00,
+    // xor r8d, r8d
+    0x45, 0x33, 0xC0,
+    // call rax
+    0xFF, 0xD0,
+    // mov rcx, [rsp+48h]
+    0x48, 0x8B, 0x4C, 0x24, 0x48,
+    // mov [rcx+94h], eax
+    0x89, 0x81, 0x94, 0x00, 0x00, 0x00,
+    // add rsp, 58h
+    0x48, 0x83, 0xC4, 0x58,
+    // ret
+    0xC3,
+    // mov rcx, [rsp+48h]
+    0x48, 0x8B, 0x4C, 0x24, 0x48,
+    // mov dword ptr [rcx+94h], 1
+    0xC7, 0x81, 0x94, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
     // add rsp, 58h
     0x48, 0x83, 0xC4, 0x58,
     // ret
@@ -927,6 +1031,8 @@ const wchar_t* LoadMethodName(LoadMethod loadMethod)
         return L"LdrpLoadDll";
     case LoadMethod::LdrpLoadDllInternal:
         return L"LdrpLoadDllInternal";
+    case LoadMethod::ManualMap:
+        return L"ManualMap";
     default:
         return L"unknown";
     }
@@ -1004,6 +1110,662 @@ LPVOID StageRemoteExecutableStub(HANDLE process,
 
     FlushInstructionCache(process, remoteStub, stubSize);
     return remoteStub;
+}
+
+template <typename T>
+T* RvaToPointer(std::vector<unsigned char>& image, DWORD rva)
+{
+    if (rva > image.size() || sizeof(T) > image.size() - rva)
+    {
+        return nullptr;
+    }
+
+    return reinterpret_cast<T*>(image.data() + rva);
+}
+
+void* RvaToPointer(std::vector<unsigned char>& image, DWORD rva, std::size_t size)
+{
+    if (rva > image.size() || size > image.size() - rva)
+    {
+        return nullptr;
+    }
+
+    return image.data() + rva;
+}
+
+IMAGE_NT_HEADERS64* GetMappedNtHeaders(std::vector<unsigned char>& image)
+{
+    if (image.size() < sizeof(IMAGE_DOS_HEADER))
+    {
+        return nullptr;
+    }
+
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(image.data());
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE ||
+        dos->e_lfanew < 0 ||
+        static_cast<std::size_t>(dos->e_lfanew) > image.size() - sizeof(IMAGE_NT_HEADERS64))
+    {
+        return nullptr;
+    }
+
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(image.data() + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    {
+        return nullptr;
+    }
+
+    return nt;
+}
+
+bool ReadWholeFile(const wchar_t* path, std::vector<unsigned char>& bytes)
+{
+    bytes.clear();
+
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file)
+    {
+        wprintf(L"Failed to open DLL file for manual mapping: %s\n", path);
+        return false;
+    }
+
+    const std::streamoff size = file.tellg();
+    if (size <= 0)
+    {
+        wprintf(L"DLL file is empty or unreadable: %s\n", path);
+        return false;
+    }
+
+    file.seekg(0, std::ios::beg);
+    bytes.resize(static_cast<std::size_t>(size));
+    if (!file.read(reinterpret_cast<char*>(bytes.data()), size))
+    {
+        wprintf(L"Failed to read DLL file for manual mapping: %s\n", path);
+        return false;
+    }
+
+    return true;
+}
+
+bool BuildMappedImage(const std::vector<unsigned char>& rawImage,
+                      std::vector<unsigned char>& mappedImage)
+{
+    mappedImage.clear();
+
+    if (rawImage.size() < sizeof(IMAGE_DOS_HEADER))
+    {
+        wprintf(L"ManualMap input is too small for a DOS header.\n");
+        return false;
+    }
+
+    const auto* rawDos = reinterpret_cast<const IMAGE_DOS_HEADER*>(rawImage.data());
+    if (rawDos->e_magic != IMAGE_DOS_SIGNATURE ||
+        rawDos->e_lfanew < 0 ||
+        static_cast<std::size_t>(rawDos->e_lfanew) > rawImage.size() - sizeof(IMAGE_NT_HEADERS64))
+    {
+        wprintf(L"ManualMap input does not contain a valid DOS/NT header.\n");
+        return false;
+    }
+
+    const auto* rawNt =
+        reinterpret_cast<const IMAGE_NT_HEADERS64*>(rawImage.data() + rawDos->e_lfanew);
+    if (rawNt->Signature != IMAGE_NT_SIGNATURE ||
+        rawNt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+        rawNt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64)
+    {
+        wprintf(L"ManualMap currently supports x64 PE images only.\n");
+        return false;
+    }
+
+    if ((rawNt->FileHeader.Characteristics & IMAGE_FILE_DLL) == 0)
+    {
+        wprintf(L"ManualMap expects a DLL image.\n");
+        return false;
+    }
+
+    if (rawNt->OptionalHeader.SizeOfImage == 0 ||
+        rawNt->OptionalHeader.SizeOfHeaders > rawImage.size())
+    {
+        wprintf(L"ManualMap image sizes are invalid.\n");
+        return false;
+    }
+
+    mappedImage.assign(rawNt->OptionalHeader.SizeOfImage, 0);
+    std::memcpy(mappedImage.data(), rawImage.data(), rawNt->OptionalHeader.SizeOfHeaders);
+
+    const auto* section = IMAGE_FIRST_SECTION(rawNt);
+    for (WORD index = 0; index < rawNt->FileHeader.NumberOfSections; ++index, ++section)
+    {
+        if (section->SizeOfRawData == 0)
+        {
+            continue;
+        }
+
+        const std::size_t sourceOffset = section->PointerToRawData;
+        const std::size_t copySize = section->SizeOfRawData;
+        const std::size_t destinationRva = section->VirtualAddress;
+
+        if (sourceOffset > rawImage.size() ||
+            copySize > rawImage.size() - sourceOffset ||
+            destinationRva > mappedImage.size() ||
+            copySize > mappedImage.size() - destinationRva)
+        {
+            wprintf(L"ManualMap section %hu has invalid raw or virtual bounds.\n", index);
+            return false;
+        }
+
+        std::memcpy(mappedImage.data() + destinationRva,
+                    rawImage.data() + sourceOffset,
+                    copySize);
+    }
+
+    wprintf(L"ManualMap built local image layout: SizeOfImage=0x%lX, SizeOfHeaders=0x%lX.\n",
+            rawNt->OptionalHeader.SizeOfImage,
+            rawNt->OptionalHeader.SizeOfHeaders);
+    return true;
+}
+
+bool ApplyManualMapRelocations(std::vector<unsigned char>& mappedImage,
+                               std::uintptr_t remoteImageBase)
+{
+    IMAGE_NT_HEADERS64* nt = GetMappedNtHeaders(mappedImage);
+    if (nt == nullptr)
+    {
+        wprintf(L"ManualMap relocation step could not read mapped NT headers.\n");
+        return false;
+    }
+
+    const auto preferredBase =
+        static_cast<std::uintptr_t>(nt->OptionalHeader.ImageBase);
+    const std::intptr_t delta =
+        static_cast<std::intptr_t>(remoteImageBase - preferredBase);
+    if (delta == 0)
+    {
+        wprintf(L"ManualMap allocated at preferred image base; relocations are not needed.\n");
+        return true;
+    }
+
+    const IMAGE_DATA_DIRECTORY& directory =
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+    if (directory.VirtualAddress == 0 || directory.Size == 0)
+    {
+        wprintf(L"ManualMap image needs relocation but has no relocation directory.\n");
+        return false;
+    }
+
+    DWORD parsed = 0;
+    while (parsed < directory.Size)
+    {
+        auto* block = RvaToPointer<IMAGE_BASE_RELOCATION>(
+            mappedImage,
+            directory.VirtualAddress + parsed);
+        if (block == nullptr || block->SizeOfBlock < sizeof(IMAGE_BASE_RELOCATION))
+        {
+            wprintf(L"ManualMap relocation block is invalid.\n");
+            return false;
+        }
+
+        const DWORD entryBytes = block->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION);
+        if ((entryBytes % sizeof(WORD)) != 0)
+        {
+            wprintf(L"ManualMap relocation block has invalid entry size.\n");
+            return false;
+        }
+
+        const WORD* entries = reinterpret_cast<const WORD*>(block + 1);
+        const DWORD entryCount = entryBytes / sizeof(WORD);
+        for (DWORD index = 0; index < entryCount; ++index)
+        {
+            const WORD type = entries[index] >> 12;
+            const WORD offset = entries[index] & 0x0FFF;
+            const DWORD patchRva = block->VirtualAddress + offset;
+
+            if (type == IMAGE_REL_BASED_ABSOLUTE)
+            {
+                continue;
+            }
+
+            // For ordinary IMAGE_FILE_MACHINE_AMD64 DLLs, real base fixups are
+            // DIR64 entries and ABSOLUTE entries are padding/no-ops. Anything
+            // else would be unusual for this lab target, so fail instead of
+            // guessing how to patch a malformed or nonstandard image.
+            if (type != IMAGE_REL_BASED_DIR64)
+            {
+                wprintf(L"ManualMap encountered unsupported relocation type %hu.\n", type);
+                return false;
+            }
+
+            auto* patch = RvaToPointer<std::uint64_t>(mappedImage, patchRva);
+            if (patch == nullptr)
+            {
+                wprintf(L"ManualMap relocation patch RVA is invalid.\n");
+                return false;
+            }
+
+            *patch = static_cast<std::uint64_t>(
+                static_cast<std::intptr_t>(*patch) + delta);
+        }
+
+        parsed += block->SizeOfBlock;
+    }
+
+    wprintf(L"ManualMap applied base relocations: preferred=0x%p remote=0x%p delta=0x%Ix.\n",
+            reinterpret_cast<void*>(preferredBase),
+            reinterpret_cast<void*>(remoteImageBase),
+            static_cast<std::uintptr_t>(delta));
+    return true;
+}
+
+bool GetLocalModuleBaseName(HMODULE module, wchar_t* output, DWORD outputCount)
+{
+    wchar_t modulePath[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameW(module, modulePath, _countof(modulePath));
+    if (length == 0 || length >= _countof(modulePath))
+    {
+        PrintLastError(L"GetModuleFileNameW(local module)");
+        return false;
+    }
+
+    const wchar_t* baseName = wcsrchr(modulePath, L'\\');
+    baseName = baseName ? baseName + 1 : modulePath;
+
+    if (wcscpy_s(output, outputCount, baseName) != 0)
+    {
+        wprintf(L"Failed to copy local module base name.\n");
+        return false;
+    }
+
+    return true;
+}
+
+bool LoadRemoteLibraryWForManualMap(HANDLE process,
+                                    DWORD targetPid,
+                                    const wchar_t* moduleName)
+{
+    LPTHREAD_START_ROUTINE remoteLoadLibraryW =
+        ResolveRemoteProcAddress(targetPid, L"kernel32.dll", "LoadLibraryW");
+    if (!remoteLoadLibraryW)
+    {
+        return false;
+    }
+
+    const SIZE_T moduleNameBytes = (wcslen(moduleName) + 1) * sizeof(wchar_t);
+    LPVOID remoteModuleName = VirtualAllocEx(process,
+                                             nullptr,
+                                             moduleNameBytes,
+                                             MEM_COMMIT | MEM_RESERVE,
+                                             PAGE_READWRITE);
+    if (!remoteModuleName)
+    {
+        PrintLastError(L"VirtualAllocEx(ManualMap dependency name)");
+        return false;
+    }
+
+    if (!WriteProcessMemory(process, remoteModuleName, moduleName, moduleNameBytes, nullptr))
+    {
+        PrintLastError(L"WriteProcessMemory(ManualMap dependency name)");
+        ReleaseRemoteAllocation(process, remoteModuleName, L"VirtualFreeEx(ManualMap dependency name)");
+        return false;
+    }
+
+    UniqueHandle thread(CreateRemoteThread(process,
+                                           nullptr,
+                                           0,
+                                           remoteLoadLibraryW,
+                                           remoteModuleName,
+                                           0,
+                                           nullptr));
+    if (!thread.valid())
+    {
+        PrintLastError(L"CreateRemoteThread(ManualMap dependency LoadLibraryW)");
+        ReleaseRemoteAllocation(process, remoteModuleName, L"VirtualFreeEx(ManualMap dependency name)");
+        return false;
+    }
+
+    const bool waited = WaitForRemoteThread(thread.get());
+    ReleaseRemoteAllocation(process, remoteModuleName, L"VirtualFreeEx(ManualMap dependency name)");
+    if (!waited)
+    {
+        return false;
+    }
+
+    std::uintptr_t remoteModule = FindRemoteModuleBase(targetPid, moduleName);
+    if (remoteModule == 0)
+    {
+        wprintf(L"ManualMap loaded dependency %s but could not observe it in target modules.\n",
+                moduleName);
+        return false;
+    }
+
+    wprintf(L"ManualMap dependency available in target: %s at 0x%p.\n",
+            moduleName,
+            reinterpret_cast<void*>(remoteModule));
+    return true;
+}
+
+bool EnsureRemoteModuleForManualMap(HANDLE process,
+                                    DWORD targetPid,
+                                    const wchar_t* moduleName)
+{
+    if (FindRemoteModuleBase(targetPid, moduleName) != 0)
+    {
+        return true;
+    }
+
+    wprintf(L"ManualMap loading missing dependency into target: %s.\n", moduleName);
+    return LoadRemoteLibraryWForManualMap(process, targetPid, moduleName);
+}
+
+bool ResolveManualMapImportAddress(HANDLE process,
+                                   DWORD targetPid,
+                                   HMODULE localImportModule,
+                                   FARPROC localProc,
+                                   std::uintptr_t& remoteProc)
+{
+    remoteProc = 0;
+
+    HMODULE actualLocalModule = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(localProc),
+                            &actualLocalModule))
+    {
+        PrintLastError(L"GetModuleHandleExW(ManualMap import)");
+        return false;
+    }
+
+    wchar_t actualModuleName[MAX_PATH] = {};
+    if (!GetLocalModuleBaseName(actualLocalModule, actualModuleName, _countof(actualModuleName)))
+    {
+        return false;
+    }
+
+    if (!EnsureRemoteModuleForManualMap(process, targetPid, actualModuleName))
+    {
+        return false;
+    }
+
+    const std::uintptr_t remoteModule = FindRemoteModuleBase(targetPid, actualModuleName);
+    if (remoteModule == 0)
+    {
+        return false;
+    }
+
+    const std::uintptr_t rva =
+        reinterpret_cast<std::uintptr_t>(localProc) -
+        reinterpret_cast<std::uintptr_t>(actualLocalModule);
+
+    remoteProc = remoteModule + rva;
+    (void)localImportModule;
+    return true;
+}
+
+bool ResolveManualMapImports(HANDLE process,
+                             DWORD targetPid,
+                             std::vector<unsigned char>& mappedImage)
+{
+    IMAGE_NT_HEADERS64* nt = GetMappedNtHeaders(mappedImage);
+    if (nt == nullptr)
+    {
+        wprintf(L"ManualMap import step could not read mapped NT headers.\n");
+        return false;
+    }
+
+    const IMAGE_DATA_DIRECTORY& importDirectory =
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (importDirectory.VirtualAddress == 0 || importDirectory.Size == 0)
+    {
+        wprintf(L"ManualMap image has no imports.\n");
+        return true;
+    }
+
+    DWORD descriptorRva = importDirectory.VirtualAddress;
+    for (;; descriptorRva += sizeof(IMAGE_IMPORT_DESCRIPTOR))
+    {
+        auto* descriptor = RvaToPointer<IMAGE_IMPORT_DESCRIPTOR>(mappedImage, descriptorRva);
+        if (descriptor == nullptr)
+        {
+            wprintf(L"ManualMap import descriptor is invalid.\n");
+            return false;
+        }
+
+        if (descriptor->Name == 0)
+        {
+            break;
+        }
+
+        const char* moduleName =
+            static_cast<const char*>(RvaToPointer(mappedImage, descriptor->Name, 1));
+        if (moduleName == nullptr)
+        {
+            wprintf(L"ManualMap import module name RVA is invalid.\n");
+            return false;
+        }
+
+        HMODULE localImportModule = LoadLibraryA(moduleName);
+        if (!localImportModule)
+        {
+            wprintf(L"LoadLibraryA(%S) failed while resolving ManualMap imports. GetLastError() = %lu\n",
+                    moduleName,
+                    GetLastError());
+            return false;
+        }
+
+        const DWORD lookupTableRva =
+            descriptor->OriginalFirstThunk != 0 ? descriptor->OriginalFirstThunk : descriptor->FirstThunk;
+        DWORD thunkRva = lookupTableRva;
+        DWORD iatRva = descriptor->FirstThunk;
+
+        for (;; thunkRva += sizeof(IMAGE_THUNK_DATA64), iatRva += sizeof(IMAGE_THUNK_DATA64))
+        {
+            auto* lookupThunk = RvaToPointer<IMAGE_THUNK_DATA64>(mappedImage, thunkRva);
+            auto* iatThunk = RvaToPointer<IMAGE_THUNK_DATA64>(mappedImage, iatRva);
+            if (lookupThunk == nullptr || iatThunk == nullptr)
+            {
+                wprintf(L"ManualMap import thunk is invalid.\n");
+                return false;
+            }
+
+            if (lookupThunk->u1.AddressOfData == 0)
+            {
+                break;
+            }
+
+            FARPROC localProc = nullptr;
+            if (IMAGE_SNAP_BY_ORDINAL64(lookupThunk->u1.Ordinal))
+            {
+                const WORD ordinal = static_cast<WORD>(IMAGE_ORDINAL64(lookupThunk->u1.Ordinal));
+                localProc = GetProcAddress(localImportModule, reinterpret_cast<LPCSTR>(ordinal));
+            }
+            else
+            {
+                auto* importByName = RvaToPointer<IMAGE_IMPORT_BY_NAME>(
+                    mappedImage,
+                    static_cast<DWORD>(lookupThunk->u1.AddressOfData));
+                if (importByName == nullptr)
+                {
+                    wprintf(L"ManualMap import-by-name RVA is invalid.\n");
+                    return false;
+                }
+
+                localProc = GetProcAddress(localImportModule,
+                                           reinterpret_cast<const char*>(importByName->Name));
+            }
+
+            if (!localProc)
+            {
+                wprintf(L"ManualMap failed to resolve import from %S. GetLastError() = %lu\n",
+                        moduleName,
+                        GetLastError());
+                return false;
+            }
+
+            std::uintptr_t remoteProc = 0;
+            if (!ResolveManualMapImportAddress(process,
+                                               targetPid,
+                                               localImportModule,
+                                               localProc,
+                                               remoteProc))
+            {
+                return false;
+            }
+
+            iatThunk->u1.Function = remoteProc;
+        }
+
+        wprintf(L"ManualMap resolved imports from %S.\n", moduleName);
+    }
+
+    const IMAGE_DATA_DIRECTORY& delayImportDirectory =
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
+    if (delayImportDirectory.VirtualAddress != 0 && delayImportDirectory.Size != 0)
+    {
+        wprintf(L"ManualMap delay imports are not implemented in this first lab pass.\n");
+        return false;
+    }
+
+    return true;
+}
+
+DWORD ProtectionForSection(DWORD characteristics)
+{
+    const bool executable = (characteristics & IMAGE_SCN_MEM_EXECUTE) != 0;
+    const bool readable = (characteristics & IMAGE_SCN_MEM_READ) != 0;
+    const bool writable = (characteristics & IMAGE_SCN_MEM_WRITE) != 0;
+
+    if (executable)
+    {
+        if (writable)
+        {
+            return PAGE_EXECUTE_READWRITE;
+        }
+
+        return readable ? PAGE_EXECUTE_READ : PAGE_EXECUTE;
+    }
+
+    if (writable)
+    {
+        return PAGE_READWRITE;
+    }
+
+    return readable ? PAGE_READONLY : PAGE_NOACCESS;
+}
+
+bool ProtectManualMapSections(HANDLE process,
+                              LPVOID remoteImage,
+                              std::vector<unsigned char>& mappedImage)
+{
+    IMAGE_NT_HEADERS64* nt = GetMappedNtHeaders(mappedImage);
+    if (nt == nullptr)
+    {
+        return false;
+    }
+
+    DWORD oldProtect = 0;
+    VirtualProtectEx(process,
+                     remoteImage,
+                     nt->OptionalHeader.SizeOfHeaders,
+                     PAGE_READONLY,
+                     &oldProtect);
+
+    const auto* section = IMAGE_FIRST_SECTION(nt);
+    for (WORD index = 0; index < nt->FileHeader.NumberOfSections; ++index, ++section)
+    {
+        const SIZE_T protectSize =
+            (std::max)(section->Misc.VirtualSize, section->SizeOfRawData);
+        if (protectSize == 0)
+        {
+            continue;
+        }
+
+        const DWORD protection = ProtectionForSection(section->Characteristics);
+        const auto remoteSection =
+            reinterpret_cast<unsigned char*>(remoteImage) + section->VirtualAddress;
+
+        if (!VirtualProtectEx(process,
+                              remoteSection,
+                              protectSize,
+                              protection,
+                              &oldProtect))
+        {
+            wprintf(L"VirtualProtectEx(ManualMap section %hu) failed. GetLastError() = %lu\n",
+                    index,
+                    GetLastError());
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool PrepareManualMapRunContext(std::vector<unsigned char>& mappedImage,
+                                std::uintptr_t remoteImageBase,
+                                ManualMapRemoteContext& context)
+{
+    IMAGE_NT_HEADERS64* nt = GetMappedNtHeaders(mappedImage);
+    if (nt == nullptr)
+    {
+        return false;
+    }
+
+    context = {};
+    context.image_base = remoteImageBase;
+    if (nt->OptionalHeader.AddressOfEntryPoint != 0)
+    {
+        context.entry_point = remoteImageBase + nt->OptionalHeader.AddressOfEntryPoint;
+    }
+
+    const IMAGE_DATA_DIRECTORY& tlsDirectory =
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+    if (tlsDirectory.VirtualAddress == 0 || tlsDirectory.Size == 0)
+    {
+        return true;
+    }
+
+    auto* tls = RvaToPointer<IMAGE_TLS_DIRECTORY64>(mappedImage, tlsDirectory.VirtualAddress);
+    if (tls == nullptr || tls->AddressOfCallBacks == 0)
+    {
+        return true;
+    }
+
+    if (tls->AddressOfCallBacks < remoteImageBase)
+    {
+        wprintf(L"ManualMap TLS callback array points outside the mapped image.\n");
+        return false;
+    }
+
+    const auto callbackArrayRva =
+        static_cast<DWORD>(tls->AddressOfCallBacks - remoteImageBase);
+    // A more complete mapper would count the null-terminated callback array and
+    // allocate exactly enough remote state. This lab copies a capped list into
+    // the remote context so the x64 init stub can stay compact and readable.
+    for (std::size_t index = 0; index < kManualMapMaxTlsCallbacks; ++index)
+    {
+        auto* callback = RvaToPointer<std::uintptr_t>(
+            mappedImage,
+            callbackArrayRva + static_cast<DWORD>(index * sizeof(std::uintptr_t)));
+        if (callback == nullptr)
+        {
+            wprintf(L"ManualMap TLS callback array is invalid.\n");
+            return false;
+        }
+
+        if (*callback == 0)
+        {
+            break;
+        }
+
+        context.tls_callbacks[context.tls_callback_count++] = *callback;
+    }
+
+    if (context.tls_callback_count == kManualMapMaxTlsCallbacks)
+    {
+        wprintf(L"ManualMap found too many TLS callbacks for this beginner context.\n");
+        return false;
+    }
+
+    wprintf(L"ManualMap staged %lu TLS callback(s).\n", context.tls_callback_count);
+    return true;
 }
 
 bool InjectDllWithLoadLibraryInternal(DWORD targetPid,
@@ -1702,6 +2464,191 @@ bool InjectDllWithLdrpLoadDllInternal(DWORD targetPid,
             LaunchMethodName(config.launchMethod));
     return true;
 }
+
+bool InjectDllWithManualMap(DWORD targetPid,
+                            const wchar_t* dllPath,
+                            const InjectorConfig& config)
+{
+    if (config.launchMethod != LaunchMethod::CreateRemoteThread &&
+        config.launchMethod != LaunchMethod::NtCreateThreadEx)
+    {
+        wprintf(L"ManualMap currently supports CreateRemoteThread and NtCreateThreadEx launches only.\n");
+        return false;
+    }
+
+    UniqueHandle process = OpenTargetProcessForInjection(targetPid);
+    if (!process.valid())
+    {
+        return false;
+    }
+
+    std::vector<unsigned char> rawImage;
+    if (!ReadWholeFile(dllPath, rawImage))
+    {
+        return false;
+    }
+
+    std::vector<unsigned char> mappedImage;
+    if (!BuildMappedImage(rawImage, mappedImage))
+    {
+        return false;
+    }
+
+    IMAGE_NT_HEADERS64* nt = GetMappedNtHeaders(mappedImage);
+    if (nt == nullptr)
+    {
+        wprintf(L"ManualMap could not read mapped NT headers.\n");
+        return false;
+    }
+
+    LPVOID remoteImage = VirtualAllocEx(process.get(),
+                                        reinterpret_cast<LPVOID>(nt->OptionalHeader.ImageBase),
+                                        nt->OptionalHeader.SizeOfImage,
+                                        MEM_COMMIT | MEM_RESERVE,
+                                        PAGE_READWRITE);
+    if (!remoteImage)
+    {
+        remoteImage = VirtualAllocEx(process.get(),
+                                     nullptr,
+                                     nt->OptionalHeader.SizeOfImage,
+                                     MEM_COMMIT | MEM_RESERVE,
+                                     PAGE_READWRITE);
+    }
+
+    if (!remoteImage)
+    {
+        PrintLastError(L"VirtualAllocEx(ManualMap image)");
+        return false;
+    }
+
+    const auto remoteImageBase = reinterpret_cast<std::uintptr_t>(remoteImage);
+    wprintf(L"ManualMap allocated target image memory at 0x%p.\n", remoteImage);
+
+    if (!ApplyManualMapRelocations(mappedImage, remoteImageBase) ||
+        !ResolveManualMapImports(process.get(), targetPid, mappedImage))
+    {
+        ReleaseRemoteAllocation(process.get(), remoteImage, L"VirtualFreeEx(ManualMap image)");
+        return false;
+    }
+
+    ManualMapRemoteContext context = {};
+    if (!PrepareManualMapRunContext(mappedImage, remoteImageBase, context))
+    {
+        ReleaseRemoteAllocation(process.get(), remoteImage, L"VirtualFreeEx(ManualMap image)");
+        return false;
+    }
+
+    if (!WriteProcessMemory(process.get(),
+                            remoteImage,
+                            mappedImage.data(),
+                            mappedImage.size(),
+                            nullptr))
+    {
+        PrintLastError(L"WriteProcessMemory(ManualMap image)");
+        ReleaseRemoteAllocation(process.get(), remoteImage, L"VirtualFreeEx(ManualMap image)");
+        return false;
+    }
+
+    if (!ProtectManualMapSections(process.get(), remoteImage, mappedImage))
+    {
+        ReleaseRemoteAllocation(process.get(), remoteImage, L"VirtualFreeEx(ManualMap image)");
+        return false;
+    }
+
+    FlushInstructionCache(process.get(), remoteImage, mappedImage.size());
+
+    LPVOID remoteStub = StageRemoteExecutableStub(process.get(),
+                                                 kManualMapInitStub,
+                                                 sizeof(kManualMapInitStub),
+                                                 L"ManualMap init");
+    if (!remoteStub)
+    {
+        ReleaseRemoteAllocation(process.get(), remoteImage, L"VirtualFreeEx(ManualMap image)");
+        return false;
+    }
+
+    LPVOID remoteContext = VirtualAllocEx(process.get(),
+                                          nullptr,
+                                          sizeof(ManualMapRemoteContext),
+                                          MEM_COMMIT | MEM_RESERVE,
+                                          PAGE_READWRITE);
+    if (!remoteContext)
+    {
+        PrintLastError(L"VirtualAllocEx(ManualMap context)");
+        ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(ManualMap init stub)");
+        ReleaseRemoteAllocation(process.get(), remoteImage, L"VirtualFreeEx(ManualMap image)");
+        return false;
+    }
+
+    if (!WriteProcessMemory(process.get(),
+                            remoteContext,
+                            &context,
+                            sizeof(context),
+                            nullptr))
+    {
+        PrintLastError(L"WriteProcessMemory(ManualMap context)");
+        ReleaseRemoteAllocation(process.get(), remoteContext, L"VirtualFreeEx(ManualMap context)");
+        ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(ManualMap init stub)");
+        ReleaseRemoteAllocation(process.get(), remoteImage, L"VirtualFreeEx(ManualMap image)");
+        return false;
+    }
+
+    wprintf(L"ManualMap staged init context at 0x%p and init stub at 0x%p.\n",
+            remoteContext,
+            remoteStub);
+
+    bool canReleaseRemoteState = true;
+    if (!LaunchRemoteRoutine(process.get(),
+                             targetPid,
+                             dllPath,
+                             reinterpret_cast<LPTHREAD_START_ROUTINE>(remoteStub),
+                             remoteContext,
+                             config,
+                             canReleaseRemoteState))
+    {
+        if (canReleaseRemoteState)
+        {
+            ReleaseRemoteAllocation(process.get(), remoteContext, L"VirtualFreeEx(ManualMap context)");
+            ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(ManualMap init stub)");
+        }
+        ReleaseRemoteAllocation(process.get(), remoteImage, L"VirtualFreeEx(ManualMap image)");
+        return false;
+    }
+
+    ManualMapRemoteContext completedContext = {};
+    if (!ReadProcessMemory(process.get(),
+                           remoteContext,
+                           &completedContext,
+                           sizeof(completedContext),
+                           nullptr))
+    {
+        PrintLastError(L"ReadProcessMemory(ManualMap context)");
+        if (canReleaseRemoteState)
+        {
+            ReleaseRemoteAllocation(process.get(), remoteContext, L"VirtualFreeEx(ManualMap context)");
+            ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(ManualMap init stub)");
+        }
+        return false;
+    }
+
+    if (canReleaseRemoteState)
+    {
+        ReleaseRemoteAllocation(process.get(), remoteContext, L"VirtualFreeEx(ManualMap context)");
+        ReleaseRemoteAllocation(process.get(), remoteStub, L"VirtualFreeEx(ManualMap init stub)");
+    }
+
+    if (completedContext.dllmain_result == 0)
+    {
+        wprintf(L"ManualMap entry point returned FALSE. Leaving the mapped image allocated for inspection.\n");
+        return false;
+    }
+
+    wprintf(L"ManualMap initialized image at 0x%p. "
+            L"The mapped DLL is private memory, not a loader-list module.\n",
+            remoteImage);
+    wprintf(L"Check TargetApp for private executable memory and loader-list differences.\n");
+    return true;
+}
 }
 
 bool InjectDll(DWORD targetPid,
@@ -1734,6 +2681,9 @@ bool InjectDll(DWORD targetPid,
 
     case LoadMethod::LdrpLoadDllInternal:
         return InjectDllWithLdrpLoadDllInternal(targetPid, dllPath, config);
+
+    case LoadMethod::ManualMap:
+        return InjectDllWithManualMap(targetPid, dllPath, config);
 
     default:
         wprintf(L"Unsupported load method.\n");

@@ -541,12 +541,13 @@ InjectorLab.exe --target app --load LdrLoadDll --launch QueueUserAPC --dll Train
 InjectorLab.exe --target app --load LdrLoadDll --launch ThreadHijack --hijack-thread <tid> --dll TrainingDll.dll
 InjectorLab.exe --target app --load LdrpLoadDll --launch CreateRemoteThread --dll TrainingDll.dll
 InjectorLab.exe --target app --load LdrpLoadDllInternal --launch CreateRemoteThread --dll TrainingDll.dll
-InjectorLab.exe --target app --load ManualMap --launch ThreadHijack --dll TrainingDll.dll
+InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --dll TrainingDll.dll
+InjectorLab.exe --target app --load ManualMap --launch NtCreateThreadEx --dll TrainingDll.dll
 ```
 
 The command syntax should make the two axes obvious.
 
-The implementation now supports `--load LoadLibraryW`, `--load LdrLoadDll`, `--load LdrpLoadDll`, and `--load LdrpLoadDllInternal` with the existing launch-method axis. The private `Ldrp*` methods resolve exact RVAs from the matching local `ntdll.pdb` and currently target Windows 10 1809+ x64 and Windows 11 x64 call layouts. Manual mapping remains the next major unimplemented load method.
+The implementation now supports `--load LoadLibraryW`, `--load LdrLoadDll`, `--load LdrpLoadDll`, `--load LdrpLoadDllInternal`, and `--load ManualMap`. The private `Ldrp*` methods resolve exact RVAs from the matching local `ntdll.pdb` and currently target Windows 10 1809+ x64 and Windows 11 x64 call layouts. Manual mapping currently supports `CreateRemoteThread` and `NtCreateThreadEx`; APC and thread-hijack launch modes need a different completion signal because manual-mapped DLLs are not loader-visible.
 
 ## What To Avoid In The Lessons
 

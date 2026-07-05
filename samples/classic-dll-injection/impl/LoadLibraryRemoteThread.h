@@ -9,7 +9,8 @@ enum class LoadMethod
     LoadLibraryW,
     LdrLoadDll,
     LdrpLoadDll,
-    LdrpLoadDllInternal
+    LdrpLoadDllInternal,
+    ManualMap
 };
 
 enum class LaunchMethod

@@ -135,6 +135,15 @@ The private-loader comparison goes one layer lower and resolves private `ntdll` 
 
 On first use, the injector reads the RSDS CodeView record from local `ntdll.dll`, downloads the matching `ntdll.pdb` into `.symbols\`, resolves the private routine RVA, then adds that RVA to the target process's `ntdll.dll` base. These methods are intentionally taught as brittle private-internal calls, not as preferred production APIs.
 
+Manual mapping changes the load method instead of calling the Windows loader for the training DLL:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch NtCreateThreadEx --dll .\x64\Debug\TrainingDll.dll
+```
+
+This path reads the DLL file locally, lays it out like an image, applies relocations, resolves imports to target-process addresses, writes the mapped image into private target memory, protects sections, then runs TLS callbacks and the DLL entry point from a small init stub. APC and thread-hijack launch modes are intentionally left for a follow-up because manual-mapped DLLs do not appear in normal loader module enumeration, so our earlier "wait until module appears" completion signal does not apply.
+
 ## Mental Model
 
 Most user-mode injectors are combinations of five steps:
@@ -238,9 +247,10 @@ Current implemented load commands:
 .\x64\Debug\InjectorLab.exe --target app --load LdrLoadDll --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
 .\x64\Debug\InjectorLab.exe --target app --load LdrpLoadDll --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
 .\x64\Debug\InjectorLab.exe --target app --load LdrpLoadDllInternal --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
 ```
 
-`LoadLibraryW` can be launched directly with the DLL path as the one argument. `LdrLoadDll` needs the remote adapter stub because it expects native call data such as `UNICODE_STRING`. `LdrpLoadDll` and `LdrpLoadDllInternal` add an exact-PDB symbol resolution step because these private routines are not exported.
+`LoadLibraryW` can be launched directly with the DLL path as the one argument. `LdrLoadDll` needs the remote adapter stub because it expects native call data such as `UNICODE_STRING`. `LdrpLoadDll` and `LdrpLoadDllInternal` add an exact-PDB symbol resolution step because these private routines are not exported. `ManualMap` skips the normal loader for the training DLL and performs core PE loader work in the injector.
 
 What to observe:
 
@@ -249,6 +259,7 @@ What to observe:
 - A launch method that reaches loader code
 - A new module visible in the target's loader list
 - Image-load telemetry for the DLL
+- With `ManualMap`, the training DLL should not appear as a normal loader-list module; look instead for private executable memory and thread starts in private image-like memory.
 
 Limitations:
 
@@ -259,6 +270,7 @@ Limitations:
 - Using a local loader address as if it always matches the target is not robust; a reliable injector must reason about the target's loaded modules.
 - `Ldrp*` routines are private implementation details. This lab resolves them from the matching Microsoft PDB and restricts the call layout to Windows 10 1809+ x64 and Windows 11 x64 builds.
 - Going lower than `LoadLibraryExW` may change user-mode API telemetry, but it does not remove the core loader artifacts.
+- `ManualMap` currently handles x64 DLLs with base relocations, normal imports, section protections, TLS callbacks, and `DllMain`; delay imports, exception function-table registration, unload, and APC/hijack completion are follow-up topics.
 
 Detection ideas:
 

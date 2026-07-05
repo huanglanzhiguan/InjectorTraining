@@ -199,7 +199,16 @@ For the private-loader comparison, keep the same launch method and move below th
 
 These paths read the RSDS record from local `ntdll.dll`, download the matching Microsoft `ntdll.pdb` into `.symbols\`, resolve the private routine RVA, and then stage a remote context/stub for the version-specific call layout. They are useful for learning how symbol-backed private calls work; they are also intentionally brittle compared with documented APIs.
 
-If you run the injector a second time against the same target process, the message box will not appear again. That is expected: the DLL is already loaded, so another `LoadLibraryW` call would only increment the loader reference count. Windows does not call `DllMain(DLL_PROCESS_ATTACH)` again for a module that is already loaded in that process. Restart `TargetApp.exe` to repeat the visible demo from the beginning.
+For the first manual-mapping comparison, keep a completion-friendly launch method:
+
+```powershell
+.\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch NtCreateThreadEx --dll .\x64\Debug\TrainingDll.dll
+```
+
+Manual mapping does not ask the Windows loader to map `TrainingDll.dll`. The injector copies a PE image into private target memory, applies relocations, resolves imports, sets section protections, then runs TLS callbacks and the entry point through a small init stub. In `TargetApp.exe`, loader-list checks should behave differently from the earlier loader-backed methods, while private executable memory becomes the obvious artifact.
+
+For loader-backed methods, if you run the injector a second time against the same target process, the message box will not appear again. That is expected: the DLL is already loaded, so another loader call would only increment the loader reference count. Windows does not call `DllMain(DLL_PROCESS_ATTACH)` again for a module that is already loaded in that process. Manual mapping is different: because the image is not registered as the same loader module, a second run can map another private copy. Restart `TargetApp.exe` to return the whole lab to a clean baseline.
 
 ## Code Walkthrough
 
