@@ -166,4 +166,43 @@ private:
 
     std::set<std::uintptr_t> baseline_region_bases_;
 };
+
+// Detects private memory allocations that look like mapped PE images.
+//
+// What it teaches:
+// Manual mapping avoids the normal Windows loader view, but the mapped DLL is
+// still usually laid out like a PE image in process memory: an MZ header, a PE
+// header, section headers, and executable section pages inside the same private
+// allocation. This is a stronger and more specific signal than "some private
+// executable memory exists."
+//
+// Expected result for the manual-map lab:
+// Clean before injection, then detected after our simple manual mapper places a
+// DLL image into MEM_PRIVATE memory.
+//
+// Limitations:
+// This is deliberately generic and does not depend on TrainingDll.dll or any
+// specific exported function. A more evasive mapper can erase PE headers, map
+// sections into separate allocations, or avoid a normal PE layout after
+// initialization. Legitimate protectors, packers, and some runtimes may also
+// create PE-like private images, so production tools combine this with policy,
+// provenance, signatures, and behavioral context.
+class PrivatePeImageMechanism final : public IInjectionDetectionMechanism
+{
+public:
+    PrivatePeImageMechanism();
+
+    std::wstring_view Id() const noexcept override;
+    std::wstring_view Name() const noexcept override;
+    std::wstring_view Category() const noexcept override;
+    std::wstring_view Description() const noexcept override;
+    DetectionResult Run() override;
+    void Reset() override;
+
+private:
+    // Store private PE-like allocation bases that are normal at baseline time.
+    void CaptureBaseline();
+
+    std::set<std::uintptr_t> baseline_allocation_bases_;
+};
 }

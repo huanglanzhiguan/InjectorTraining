@@ -3,8 +3,13 @@
 #include "../Core/MechanismRegistry.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <cwchar>
+#include <limits>
+#include <set>
 #include <sstream>
+#include <vector>
 
 namespace target
 {
@@ -73,6 +78,294 @@ LdrUnregisterDllNotificationFn ResolveLdrUnregisterDllNotification()
 std::wstring ModuleCountText(std::size_t count)
 {
     return std::to_wstring(count) + L" module(s)";
+}
+
+constexpr LONG kMaximumPeHeaderOffset = 0x1000;
+constexpr WORD kMaximumReasonableSectionCount = 96;
+constexpr DWORD kMinimumReasonableImageSize = 0x1000;
+constexpr DWORD kMaximumReasonableImageSize = 512 * 1024 * 1024;
+constexpr std::uintptr_t kNtFileHeaderOffset = sizeof(DWORD);
+constexpr std::uintptr_t kNtOptionalHeaderOffset = sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER);
+
+struct AllocationSummary
+{
+    std::size_t extent = 0;
+    bool has_executable_page = false;
+};
+
+struct PrivatePeImageCandidate
+{
+    std::uintptr_t allocation_base = 0;
+    DWORD size_of_image = 0;
+    WORD section_count = 0;
+    DWORD executable_page_protection = 0;
+};
+
+bool AddOffset(std::uintptr_t base, std::uintptr_t offset, std::uintptr_t& result)
+{
+    if (offset > (std::numeric_limits<std::uintptr_t>::max)() - base)
+    {
+        return false;
+    }
+
+    result = base + offset;
+    return true;
+}
+
+template <typename Value>
+bool ReadCurrentProcessValue(std::uintptr_t address, Value& value)
+{
+    SIZE_T bytes_read = 0;
+    return ReadProcessMemory(
+        GetCurrentProcess(),
+        reinterpret_cast<const void*>(address),
+        &value,
+        sizeof(value),
+        &bytes_read) != FALSE &&
+        bytes_read == sizeof(value);
+}
+
+AllocationSummary SummarizePrivateAllocation(std::uintptr_t allocation_base)
+{
+    AllocationSummary summary;
+    MEMORY_BASIC_INFORMATION memory = {};
+    auto* address = reinterpret_cast<unsigned char*>(allocation_base);
+    const auto* allocation = reinterpret_cast<const void*>(allocation_base);
+
+    while (VirtualQuery(address, &memory, sizeof(memory)) == sizeof(memory))
+    {
+        if (memory.AllocationBase != allocation)
+        {
+            break;
+        }
+
+        const auto region_base = reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
+        const auto region_size = static_cast<std::uintptr_t>(memory.RegionSize);
+        std::uintptr_t region_end = 0;
+        if (!AddOffset(region_base, region_size, region_end))
+        {
+            break;
+        }
+
+        if (region_end > allocation_base)
+        {
+            summary.extent = (std::max)(
+                summary.extent,
+                static_cast<std::size_t>(region_end - allocation_base));
+        }
+
+        if (memory.State == MEM_COMMIT &&
+            memory.Type == MEM_PRIVATE &&
+            IsExecutableProtection(memory.Protect))
+        {
+            summary.has_executable_page = true;
+        }
+
+        if (region_end <= reinterpret_cast<std::uintptr_t>(address))
+        {
+            break;
+        }
+
+        address = reinterpret_cast<unsigned char*>(region_end);
+    }
+
+    return summary;
+}
+
+bool ValidatePeSectionTable(std::uintptr_t section_table_address, WORD section_count, DWORD size_of_image)
+{
+    bool has_executable_section = false;
+
+    for (WORD index = 0; index < section_count; ++index)
+    {
+        IMAGE_SECTION_HEADER section = {};
+        std::uintptr_t section_address = 0;
+        if (!AddOffset(section_table_address, static_cast<std::uintptr_t>(index) * sizeof(section), section_address) ||
+            !ReadCurrentProcessValue(section_address, section))
+        {
+            return false;
+        }
+
+        if (section.VirtualAddress == 0 || section.VirtualAddress >= size_of_image)
+        {
+            return false;
+        }
+
+        const DWORD virtual_size = section.Misc.VirtualSize != 0
+            ? section.Misc.VirtualSize
+            : section.SizeOfRawData;
+        if (virtual_size != 0 &&
+            static_cast<unsigned long long>(section.VirtualAddress) + virtual_size > size_of_image)
+        {
+            return false;
+        }
+
+        if ((section.Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0)
+        {
+            has_executable_section = true;
+        }
+    }
+
+    return has_executable_section;
+}
+
+bool LooksLikePrivatePeImage(PrivatePeImageCandidate& candidate)
+{
+    MEMORY_BASIC_INFORMATION first_page = {};
+    if (VirtualQuery(
+        reinterpret_cast<const void*>(candidate.allocation_base),
+        &first_page,
+        sizeof(first_page)) != sizeof(first_page))
+    {
+        return false;
+    }
+
+    if (first_page.State != MEM_COMMIT || first_page.Type != MEM_PRIVATE)
+    {
+        return false;
+    }
+
+    IMAGE_DOS_HEADER dos_header = {};
+    if (!ReadCurrentProcessValue(candidate.allocation_base, dos_header) ||
+        dos_header.e_magic != IMAGE_DOS_SIGNATURE ||
+        dos_header.e_lfanew < static_cast<LONG>(sizeof(IMAGE_DOS_HEADER)) ||
+        dos_header.e_lfanew > kMaximumPeHeaderOffset)
+    {
+        return false;
+    }
+
+    std::uintptr_t nt_headers_address = 0;
+    if (!AddOffset(candidate.allocation_base, static_cast<std::uintptr_t>(dos_header.e_lfanew), nt_headers_address))
+    {
+        return false;
+    }
+
+    DWORD nt_signature = 0;
+    if (!ReadCurrentProcessValue(nt_headers_address, nt_signature) ||
+        nt_signature != IMAGE_NT_SIGNATURE)
+    {
+        return false;
+    }
+
+    IMAGE_FILE_HEADER file_header = {};
+    if (!ReadCurrentProcessValue(nt_headers_address + kNtFileHeaderOffset, file_header) ||
+        file_header.NumberOfSections == 0 ||
+        file_header.NumberOfSections > kMaximumReasonableSectionCount ||
+        file_header.SizeOfOptionalHeader < sizeof(WORD))
+    {
+        return false;
+    }
+
+    std::uintptr_t optional_header_address = 0;
+    if (!AddOffset(nt_headers_address, kNtOptionalHeaderOffset, optional_header_address))
+    {
+        return false;
+    }
+
+    WORD optional_magic = 0;
+    if (!ReadCurrentProcessValue(optional_header_address, optional_magic))
+    {
+        return false;
+    }
+
+    DWORD size_of_image = 0;
+    DWORD size_of_headers = 0;
+    if (optional_magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    {
+        constexpr WORD kMinimumOptionalHeaderSize =
+            static_cast<WORD>(offsetof(IMAGE_OPTIONAL_HEADER64, SizeOfHeaders) + sizeof(DWORD));
+        IMAGE_OPTIONAL_HEADER64 optional_header = {};
+        if (file_header.SizeOfOptionalHeader < kMinimumOptionalHeaderSize ||
+            !ReadCurrentProcessValue(optional_header_address, optional_header))
+        {
+            return false;
+        }
+
+        size_of_image = optional_header.SizeOfImage;
+        size_of_headers = optional_header.SizeOfHeaders;
+    }
+    else if (optional_magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+    {
+        constexpr WORD kMinimumOptionalHeaderSize =
+            static_cast<WORD>(offsetof(IMAGE_OPTIONAL_HEADER32, SizeOfHeaders) + sizeof(DWORD));
+        IMAGE_OPTIONAL_HEADER32 optional_header = {};
+        if (file_header.SizeOfOptionalHeader < kMinimumOptionalHeaderSize ||
+            !ReadCurrentProcessValue(optional_header_address, optional_header))
+        {
+            return false;
+        }
+
+        size_of_image = optional_header.SizeOfImage;
+        size_of_headers = optional_header.SizeOfHeaders;
+    }
+    else
+    {
+        return false;
+    }
+
+    if (size_of_image < kMinimumReasonableImageSize ||
+        size_of_image > kMaximumReasonableImageSize ||
+        size_of_headers == 0 ||
+        size_of_headers > size_of_image)
+    {
+        return false;
+    }
+
+    const AllocationSummary allocation = SummarizePrivateAllocation(candidate.allocation_base);
+    if (!allocation.has_executable_page || allocation.extent < size_of_image)
+    {
+        return false;
+    }
+
+    std::uintptr_t section_table_address = 0;
+    if (!AddOffset(optional_header_address, file_header.SizeOfOptionalHeader, section_table_address) ||
+        !ValidatePeSectionTable(section_table_address, file_header.NumberOfSections, size_of_image))
+    {
+        return false;
+    }
+
+    candidate.size_of_image = size_of_image;
+    candidate.section_count = file_header.NumberOfSections;
+    return true;
+}
+
+std::vector<PrivatePeImageCandidate> EnumeratePrivatePeLikeImages()
+{
+    std::vector<PrivatePeImageCandidate> candidates;
+    std::set<std::uintptr_t> visited_allocations;
+    MEMORY_BASIC_INFORMATION memory = {};
+    auto* address = static_cast<unsigned char*>(nullptr);
+
+    while (VirtualQuery(address, &memory, sizeof(memory)) == sizeof(memory))
+    {
+        if (memory.State == MEM_COMMIT &&
+            memory.Type == MEM_PRIVATE &&
+            IsExecutableProtection(memory.Protect))
+        {
+            PrivatePeImageCandidate candidate;
+            candidate.allocation_base = reinterpret_cast<std::uintptr_t>(memory.AllocationBase);
+            candidate.executable_page_protection = memory.Protect;
+
+            if (visited_allocations.insert(candidate.allocation_base).second &&
+                LooksLikePrivatePeImage(candidate))
+            {
+                candidates.push_back(candidate);
+            }
+        }
+
+        const auto region_base = reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
+        const auto region_size = static_cast<std::uintptr_t>(memory.RegionSize);
+        std::uintptr_t next = 0;
+        if (!AddOffset(region_base, region_size, next) ||
+            next <= reinterpret_cast<std::uintptr_t>(address))
+        {
+            break;
+        }
+
+        address = reinterpret_cast<unsigned char*>(next);
+    }
+
+    return candidates;
 }
 }
 
@@ -387,9 +680,70 @@ void PrivateExecutableMemoryMechanism::CaptureBaseline()
         address = next;
     }
 }
+
+PrivatePeImageMechanism::PrivatePeImageMechanism()
+{
+    CaptureBaseline();
+}
+
+std::wstring_view PrivatePeImageMechanism::Id() const noexcept
+{
+    return L"memory.private_pe_image";
+}
+
+std::wstring_view PrivatePeImageMechanism::Name() const noexcept
+{
+    return L"Private PE-like image";
+}
+
+std::wstring_view PrivatePeImageMechanism::Category() const noexcept
+{
+    return L"Memory";
+}
+
+std::wstring_view PrivatePeImageMechanism::Description() const noexcept
+{
+    return L"Looks for MEM_PRIVATE allocations that still resemble an in-memory PE image.";
+}
+
+DetectionResult PrivatePeImageMechanism::Run()
+{
+    for (const PrivatePeImageCandidate& candidate : EnumeratePrivatePeLikeImages())
+    {
+        if (baseline_allocation_bases_.find(candidate.allocation_base) == baseline_allocation_bases_.end())
+        {
+            return DetectionResult::Detected(L"private PE image at " +
+                                             HexAddress(candidate.allocation_base) +
+                                             L", image size " +
+                                             HexAddress(candidate.size_of_image) +
+                                             L", " +
+                                             std::to_wstring(candidate.section_count) +
+                                             L" section(s), " +
+                                             ProtectionText(candidate.executable_page_protection));
+        }
+    }
+
+    return DetectionResult::Clean(L"no private PE-like image regions");
+}
+
+void PrivatePeImageMechanism::Reset()
+{
+    CaptureBaseline();
+}
+
+void PrivatePeImageMechanism::CaptureBaseline()
+{
+    baseline_allocation_bases_.clear();
+
+    for (const PrivatePeImageCandidate& candidate : EnumeratePrivatePeLikeImages())
+    {
+        baseline_allocation_bases_.insert(candidate.allocation_base);
+    }
+}
 }
 
 TARGET_REGISTER_MECHANISM(target::ModuleBaselineMechanism)
 TARGET_REGISTER_MECHANISM(target::DllNotificationMechanism)
 TARGET_REGISTER_MECHANISM(target::ThreadStartModuleMechanism)
 TARGET_REGISTER_MECHANISM(target::PrivateExecutableMemoryMechanism)
+TARGET_REGISTER_MECHANISM(target::PrivatePeImageMechanism)
