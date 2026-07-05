@@ -205,4 +205,42 @@ private:
 
     std::set<std::uintptr_t> baseline_allocation_bases_;
 };
+
+// Detects private executable allocations whose PE header story does not match
+// the actual memory protections.
+//
+// What it teaches:
+// Erasing PE headers breaks detectors that require MZ/PE at the allocation
+// base. Fake PE headers break detectors that parse MZ/PE and trust the section
+// table. A stronger detector compares two views: what the header claims and
+// what VirtualQuery says is executable inside the same private allocation.
+//
+// Expected result for the PE-header countermeasure labs:
+// Clean for the baseline manual-map layout, then suspicious after
+// --manualmap-erase-headers or --manualmap-fake-headers.
+//
+// Limitations:
+// This is still a heuristic. Shellcode, JIT code, injected stubs, packed code,
+// and other private executable allocations may have no PE header at all. Real
+// products combine this with provenance, module ownership, signing policy,
+// execution telemetry, and allowlists.
+class PrivateHeaderMismatchMechanism final : public IInjectionDetectionMechanism
+{
+public:
+    PrivateHeaderMismatchMechanism();
+
+    std::wstring_view Id() const noexcept override;
+    std::wstring_view Name() const noexcept override;
+    std::wstring_view Category() const noexcept override;
+    std::wstring_view Description() const noexcept override;
+    DetectionResult Run() override;
+    void Reset() override;
+
+private:
+    // Store already-present mismatching allocations so legitimate runtime
+    // thunks or JIT regions do not immediately light up the training UI.
+    void CaptureBaseline();
+
+    std::set<std::uintptr_t> baseline_allocation_bases_;
+};
 }

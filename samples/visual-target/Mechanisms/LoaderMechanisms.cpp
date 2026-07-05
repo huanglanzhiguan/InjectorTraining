@@ -9,6 +9,7 @@
 #include <limits>
 #include <set>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 namespace target
@@ -99,6 +100,41 @@ struct PrivatePeImageCandidate
     DWORD size_of_image = 0;
     WORD section_count = 0;
     DWORD executable_page_protection = 0;
+};
+
+struct ExecutablePrivateRegion
+{
+    std::uintptr_t base = 0;
+    std::size_t size = 0;
+    DWORD protection = 0;
+};
+
+struct PrivateExecutableAllocation
+{
+    std::uintptr_t allocation_base = 0;
+    std::vector<ExecutablePrivateRegion> executable_regions;
+};
+
+struct ClaimedExecutableRange
+{
+    std::uintptr_t begin = 0;
+    std::uintptr_t end = 0;
+};
+
+struct PeHeaderClaims
+{
+    DWORD size_of_image = 0;
+    WORD section_count = 0;
+    std::vector<ClaimedExecutableRange> executable_ranges;
+    std::wstring failure_detail;
+};
+
+struct PrivateHeaderMismatchCandidate
+{
+    std::uintptr_t allocation_base = 0;
+    std::uintptr_t executable_region = 0;
+    DWORD executable_page_protection = 0;
+    std::wstring detail;
 };
 
 bool AddOffset(std::uintptr_t base, std::uintptr_t offset, std::uintptr_t& result)
@@ -363,6 +399,332 @@ std::vector<PrivatePeImageCandidate> EnumeratePrivatePeLikeImages()
         }
 
         address = reinterpret_cast<unsigned char*>(next);
+    }
+
+    return candidates;
+}
+
+PrivateExecutableAllocation DescribePrivateExecutableAllocation(std::uintptr_t allocation_base)
+{
+    PrivateExecutableAllocation allocation;
+    allocation.allocation_base = allocation_base;
+
+    MEMORY_BASIC_INFORMATION memory = {};
+    auto* address = reinterpret_cast<unsigned char*>(allocation_base);
+    const auto* allocation_base_pointer = reinterpret_cast<const void*>(allocation_base);
+
+    while (VirtualQuery(address, &memory, sizeof(memory)) == sizeof(memory))
+    {
+        if (memory.AllocationBase != allocation_base_pointer)
+        {
+            break;
+        }
+
+        if (memory.State == MEM_COMMIT &&
+            memory.Type == MEM_PRIVATE &&
+            IsExecutableProtection(memory.Protect))
+        {
+            allocation.executable_regions.push_back({
+                reinterpret_cast<std::uintptr_t>(memory.BaseAddress),
+                memory.RegionSize,
+                memory.Protect
+            });
+        }
+
+        const auto region_base = reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
+        const auto region_size = static_cast<std::uintptr_t>(memory.RegionSize);
+        std::uintptr_t next = 0;
+        if (!AddOffset(region_base, region_size, next) ||
+            next <= reinterpret_cast<std::uintptr_t>(address))
+        {
+            break;
+        }
+
+        address = reinterpret_cast<unsigned char*>(next);
+    }
+
+    return allocation;
+}
+
+std::vector<PrivateExecutableAllocation> EnumeratePrivateExecutableAllocations()
+{
+    std::vector<PrivateExecutableAllocation> allocations;
+    std::set<std::uintptr_t> visited_allocations;
+    MEMORY_BASIC_INFORMATION memory = {};
+    auto* address = static_cast<unsigned char*>(nullptr);
+
+    while (VirtualQuery(address, &memory, sizeof(memory)) == sizeof(memory))
+    {
+        if (memory.State == MEM_COMMIT &&
+            memory.Type == MEM_PRIVATE &&
+            IsExecutableProtection(memory.Protect))
+        {
+            const auto allocation_base =
+                reinterpret_cast<std::uintptr_t>(memory.AllocationBase);
+            if (visited_allocations.insert(allocation_base).second)
+            {
+                PrivateExecutableAllocation allocation =
+                    DescribePrivateExecutableAllocation(allocation_base);
+                if (!allocation.executable_regions.empty())
+                {
+                    allocations.push_back(std::move(allocation));
+                }
+            }
+        }
+
+        const auto region_base = reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
+        const auto region_size = static_cast<std::uintptr_t>(memory.RegionSize);
+        std::uintptr_t next = 0;
+        if (!AddOffset(region_base, region_size, next) ||
+            next <= reinterpret_cast<std::uintptr_t>(address))
+        {
+            break;
+        }
+
+        address = reinterpret_cast<unsigned char*>(next);
+    }
+
+    return allocations;
+}
+
+bool ReadPeHeaderClaims(std::uintptr_t allocation_base, PeHeaderClaims& claims)
+{
+    claims = {};
+
+    IMAGE_DOS_HEADER dos_header = {};
+    if (!ReadCurrentProcessValue(allocation_base, dos_header) ||
+        dos_header.e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        claims.failure_detail = L"no valid MZ header";
+        return false;
+    }
+
+    if (dos_header.e_lfanew < static_cast<LONG>(sizeof(IMAGE_DOS_HEADER)) ||
+        dos_header.e_lfanew > kMaximumPeHeaderOffset)
+    {
+        claims.failure_detail = L"invalid e_lfanew";
+        return false;
+    }
+
+    std::uintptr_t nt_headers_address = 0;
+    if (!AddOffset(allocation_base, static_cast<std::uintptr_t>(dos_header.e_lfanew), nt_headers_address))
+    {
+        claims.failure_detail = L"NT header address overflow";
+        return false;
+    }
+
+    DWORD nt_signature = 0;
+    if (!ReadCurrentProcessValue(nt_headers_address, nt_signature) ||
+        nt_signature != IMAGE_NT_SIGNATURE)
+    {
+        claims.failure_detail = L"no valid PE signature";
+        return false;
+    }
+
+    IMAGE_FILE_HEADER file_header = {};
+    if (!ReadCurrentProcessValue(nt_headers_address + kNtFileHeaderOffset, file_header) ||
+        file_header.NumberOfSections == 0 ||
+        file_header.NumberOfSections > kMaximumReasonableSectionCount ||
+        file_header.SizeOfOptionalHeader < sizeof(WORD))
+    {
+        claims.failure_detail = L"invalid PE file header";
+        return false;
+    }
+
+    std::uintptr_t optional_header_address = 0;
+    if (!AddOffset(nt_headers_address, kNtOptionalHeaderOffset, optional_header_address))
+    {
+        claims.failure_detail = L"optional header address overflow";
+        return false;
+    }
+
+    WORD optional_magic = 0;
+    if (!ReadCurrentProcessValue(optional_header_address, optional_magic))
+    {
+        claims.failure_detail = L"unreadable optional header";
+        return false;
+    }
+
+    DWORD size_of_headers = 0;
+    if (optional_magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    {
+        constexpr WORD kMinimumOptionalHeaderSize =
+            static_cast<WORD>(offsetof(IMAGE_OPTIONAL_HEADER64, SizeOfHeaders) + sizeof(DWORD));
+        IMAGE_OPTIONAL_HEADER64 optional_header = {};
+        if (file_header.SizeOfOptionalHeader < kMinimumOptionalHeaderSize ||
+            !ReadCurrentProcessValue(optional_header_address, optional_header))
+        {
+            claims.failure_detail = L"invalid PE64 optional header";
+            return false;
+        }
+
+        claims.size_of_image = optional_header.SizeOfImage;
+        size_of_headers = optional_header.SizeOfHeaders;
+    }
+    else if (optional_magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+    {
+        constexpr WORD kMinimumOptionalHeaderSize =
+            static_cast<WORD>(offsetof(IMAGE_OPTIONAL_HEADER32, SizeOfHeaders) + sizeof(DWORD));
+        IMAGE_OPTIONAL_HEADER32 optional_header = {};
+        if (file_header.SizeOfOptionalHeader < kMinimumOptionalHeaderSize ||
+            !ReadCurrentProcessValue(optional_header_address, optional_header))
+        {
+            claims.failure_detail = L"invalid PE32 optional header";
+            return false;
+        }
+
+        claims.size_of_image = optional_header.SizeOfImage;
+        size_of_headers = optional_header.SizeOfHeaders;
+    }
+    else
+    {
+        claims.failure_detail = L"unsupported optional header magic";
+        return false;
+    }
+
+    if (claims.size_of_image < kMinimumReasonableImageSize ||
+        claims.size_of_image > kMaximumReasonableImageSize ||
+        size_of_headers == 0 ||
+        size_of_headers > claims.size_of_image)
+    {
+        claims.failure_detail = L"implausible PE image size";
+        return false;
+    }
+
+    std::uintptr_t section_table_address = 0;
+    if (!AddOffset(optional_header_address, file_header.SizeOfOptionalHeader, section_table_address))
+    {
+        claims.failure_detail = L"section table address overflow";
+        return false;
+    }
+
+    for (WORD index = 0; index < file_header.NumberOfSections; ++index)
+    {
+        IMAGE_SECTION_HEADER section = {};
+        std::uintptr_t section_address = 0;
+        if (!AddOffset(section_table_address, static_cast<std::uintptr_t>(index) * sizeof(section), section_address) ||
+            !ReadCurrentProcessValue(section_address, section))
+        {
+            claims.failure_detail = L"unreadable PE section table";
+            return false;
+        }
+
+        if (section.VirtualAddress == 0 || section.VirtualAddress >= claims.size_of_image)
+        {
+            claims.failure_detail = L"invalid PE section RVA";
+            return false;
+        }
+
+        const DWORD virtual_size = (std::max)(section.Misc.VirtualSize, section.SizeOfRawData);
+        if (virtual_size != 0 &&
+            static_cast<unsigned long long>(section.VirtualAddress) + virtual_size > claims.size_of_image)
+        {
+            claims.failure_detail = L"invalid PE section bounds";
+            return false;
+        }
+
+        if ((section.Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0 && virtual_size != 0)
+        {
+            std::uintptr_t begin = 0;
+            std::uintptr_t end = 0;
+            if (!AddOffset(allocation_base, section.VirtualAddress, begin) ||
+                !AddOffset(begin, virtual_size, end))
+            {
+                claims.failure_detail = L"executable section address overflow";
+                return false;
+            }
+
+            claims.executable_ranges.push_back({ begin, end });
+        }
+    }
+
+    claims.section_count = file_header.NumberOfSections;
+    return true;
+}
+
+bool RegionOverlapsRange(const ExecutablePrivateRegion& region, const ClaimedExecutableRange& range)
+{
+    std::uintptr_t region_end = 0;
+    if (!AddOffset(region.base, static_cast<std::uintptr_t>(region.size), region_end))
+    {
+        return false;
+    }
+
+    return region.base < range.end && region_end > range.begin;
+}
+
+bool HeaderCoversExecutableRegion(const PeHeaderClaims& claims, const ExecutablePrivateRegion& region)
+{
+    for (const ClaimedExecutableRange& range : claims.executable_ranges)
+    {
+        if (RegionOverlapsRange(region, range))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool TryFindHeaderMismatch(const PrivateExecutableAllocation& allocation,
+                           PrivateHeaderMismatchCandidate& candidate)
+{
+    if (allocation.executable_regions.empty())
+    {
+        return false;
+    }
+
+    const ExecutablePrivateRegion& first_executable_region = allocation.executable_regions.front();
+    PeHeaderClaims claims = {};
+    candidate = {};
+    candidate.allocation_base = allocation.allocation_base;
+    candidate.executable_region = first_executable_region.base;
+    candidate.executable_page_protection = first_executable_region.protection;
+
+    if (!ReadPeHeaderClaims(allocation.allocation_base, claims))
+    {
+        candidate.detail = L"executable private allocation has " +
+            claims.failure_detail +
+            L" at " +
+            HexAddress(allocation.allocation_base);
+        return true;
+    }
+
+    if (claims.executable_ranges.empty())
+    {
+        candidate.detail = L"PE header has " +
+            std::to_wstring(claims.section_count) +
+            L" section(s) but none marked executable";
+        return true;
+    }
+
+    for (const ExecutablePrivateRegion& region : allocation.executable_regions)
+    {
+        if (!HeaderCoversExecutableRegion(claims, region))
+        {
+            candidate.executable_region = region.base;
+            candidate.executable_page_protection = region.protection;
+            candidate.detail = L"executable page at " +
+                HexAddress(region.base) +
+                L" is outside PE executable sections";
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::vector<PrivateHeaderMismatchCandidate> EnumeratePrivateHeaderMismatches()
+{
+    std::vector<PrivateHeaderMismatchCandidate> candidates;
+
+    for (const PrivateExecutableAllocation& allocation : EnumeratePrivateExecutableAllocations())
+    {
+        PrivateHeaderMismatchCandidate candidate = {};
+        if (TryFindHeaderMismatch(allocation, candidate))
+        {
+            candidates.push_back(std::move(candidate));
+        }
     }
 
     return candidates;
@@ -740,6 +1102,65 @@ void PrivatePeImageMechanism::CaptureBaseline()
         baseline_allocation_bases_.insert(candidate.allocation_base);
     }
 }
+
+PrivateHeaderMismatchMechanism::PrivateHeaderMismatchMechanism()
+{
+    CaptureBaseline();
+}
+
+std::wstring_view PrivateHeaderMismatchMechanism::Id() const noexcept
+{
+    return L"memory.private_header_mismatch";
+}
+
+std::wstring_view PrivateHeaderMismatchMechanism::Name() const noexcept
+{
+    return L"Private header mismatch";
+}
+
+std::wstring_view PrivateHeaderMismatchMechanism::Category() const noexcept
+{
+    return L"Memory";
+}
+
+std::wstring_view PrivateHeaderMismatchMechanism::Description() const noexcept
+{
+    return L"Compares PE header claims with executable MEM_PRIVATE page protections.";
+}
+
+DetectionResult PrivateHeaderMismatchMechanism::Run()
+{
+    for (const PrivateHeaderMismatchCandidate& candidate : EnumeratePrivateHeaderMismatches())
+    {
+        if (baseline_allocation_bases_.find(candidate.allocation_base) == baseline_allocation_bases_.end())
+        {
+            return DetectionResult::Suspicious(candidate.detail +
+                                               L"; allocation " +
+                                               HexAddress(candidate.allocation_base) +
+                                               L", executable page " +
+                                               HexAddress(candidate.executable_region) +
+                                               L", " +
+                                               ProtectionText(candidate.executable_page_protection));
+        }
+    }
+
+    return DetectionResult::Clean(L"private executable pages match PE header claims");
+}
+
+void PrivateHeaderMismatchMechanism::Reset()
+{
+    CaptureBaseline();
+}
+
+void PrivateHeaderMismatchMechanism::CaptureBaseline()
+{
+    baseline_allocation_bases_.clear();
+
+    for (const PrivateHeaderMismatchCandidate& candidate : EnumeratePrivateHeaderMismatches())
+    {
+        baseline_allocation_bases_.insert(candidate.allocation_base);
+    }
+}
 }
 
 TARGET_REGISTER_MECHANISM(target::ModuleBaselineMechanism)
@@ -747,3 +1168,4 @@ TARGET_REGISTER_MECHANISM(target::DllNotificationMechanism)
 TARGET_REGISTER_MECHANISM(target::ThreadStartModuleMechanism)
 TARGET_REGISTER_MECHANISM(target::PrivateExecutableMemoryMechanism)
 TARGET_REGISTER_MECHANISM(target::PrivatePeImageMechanism)
+TARGET_REGISTER_MECHANISM(target::PrivateHeaderMismatchMechanism)
