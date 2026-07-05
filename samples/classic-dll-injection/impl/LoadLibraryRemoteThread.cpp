@@ -28,6 +28,12 @@ constexpr ULONG kWindows10Build1809 = 17763;
 // this small number. The fixed cap keeps the beginner remote context simple and
 // makes oversized cases fail loudly instead of silently skipping callbacks.
 constexpr std::size_t kManualMapMaxTlsCallbacks = 16;
+constexpr LONG kManualMapFakePeHeaderOffset = 0x80;
+constexpr DWORD kManualMapFakeSectionAlignment = 0x1000;
+constexpr DWORD kManualMapFakeFileAlignment = 0x200;
+constexpr DWORD kManualMapFakeImageSize = 0x2000;
+constexpr DWORD kManualMapFakeSectionRva = 0x1000;
+constexpr DWORD kManualMapFakeSectionSize = 0x1000;
 
 struct RemoteUnicodeString
 {
@@ -1698,6 +1704,61 @@ bool ProtectManualMapSections(HANDLE process,
     return true;
 }
 
+bool WriteManualMapHeaderBytes(HANDLE process,
+                               LPVOID remoteImage,
+                               const std::vector<unsigned char>& headers,
+                               const wchar_t* label)
+{
+    if (headers.empty())
+    {
+        return true;
+    }
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtectEx(process, remoteImage, headers.size(), PAGE_READWRITE, &oldProtect))
+    {
+        wprintf(L"VirtualProtectEx(ManualMap %s) failed. GetLastError() = %lu\n",
+                label,
+                GetLastError());
+        return false;
+    }
+
+    SIZE_T bytesWritten = 0;
+    const bool wroteHeaders =
+        WriteProcessMemory(process,
+                           remoteImage,
+                           headers.data(),
+                           headers.size(),
+                           &bytesWritten) != FALSE &&
+        bytesWritten == headers.size();
+
+    DWORD ignoredProtect = 0;
+    const bool restoredProtection =
+        VirtualProtectEx(process, remoteImage, headers.size(), oldProtect, &ignoredProtect) != FALSE;
+
+    if (!wroteHeaders)
+    {
+        wprintf(L"WriteProcessMemory(ManualMap %s) failed. GetLastError() = %lu\n",
+                label,
+                GetLastError());
+    }
+
+    if (!restoredProtection)
+    {
+        wprintf(L"VirtualProtectEx(ManualMap %s restore) failed. GetLastError() = %lu\n",
+                label,
+                GetLastError());
+    }
+
+    if (!wroteHeaders || !restoredProtection)
+    {
+        return false;
+    }
+
+    FlushInstructionCache(process, remoteImage, headers.size());
+    return true;
+}
+
 bool EraseManualMapHeaders(HANDLE process, LPVOID remoteImage, DWORD sizeOfHeaders)
 {
     if (sizeOfHeaders == 0)
@@ -1711,47 +1772,89 @@ bool EraseManualMapHeaders(HANDLE process, LPVOID remoteImage, DWORD sizeOfHeade
     // returned. After this point, removing the DOS header, NT header, and
     // section table breaks PE-shape detection, but the allocation is still
     // executable MEM_PRIVATE memory.
-    DWORD oldProtect = 0;
-    if (!VirtualProtectEx(process, remoteImage, sizeOfHeaders, PAGE_READWRITE, &oldProtect))
-    {
-        wprintf(L"VirtualProtectEx(ManualMap header erase) failed. GetLastError() = %lu\n",
-                GetLastError());
-        return false;
-    }
-
     std::vector<unsigned char> zeroHeaders(sizeOfHeaders, 0);
-    SIZE_T bytesWritten = 0;
-    const bool wroteHeaders =
-        WriteProcessMemory(process,
-                           remoteImage,
-                           zeroHeaders.data(),
-                           zeroHeaders.size(),
-                           &bytesWritten) != FALSE &&
-        bytesWritten == zeroHeaders.size();
-
-    DWORD ignoredProtect = 0;
-    const bool restoredProtection =
-        VirtualProtectEx(process, remoteImage, sizeOfHeaders, oldProtect, &ignoredProtect) != FALSE;
-
-    if (!wroteHeaders)
-    {
-        wprintf(L"WriteProcessMemory(ManualMap header erase) failed. GetLastError() = %lu\n",
-                GetLastError());
-    }
-
-    if (!restoredProtection)
-    {
-        wprintf(L"VirtualProtectEx(ManualMap header restore) failed. GetLastError() = %lu\n",
-                GetLastError());
-    }
-
-    if (!wroteHeaders || !restoredProtection)
+    if (!WriteManualMapHeaderBytes(process, remoteImage, zeroHeaders, L"header erase"))
     {
         return false;
     }
 
-    FlushInstructionCache(process, remoteImage, sizeOfHeaders);
     wprintf(L"ManualMap erased 0x%lX byte(s) of PE headers in the remote image.\n",
+            sizeOfHeaders);
+    return true;
+}
+
+bool BuildFakeManualMapHeaders(std::uintptr_t remoteImageBase,
+                               DWORD sizeOfHeaders,
+                               std::vector<unsigned char>& fakeHeaders)
+{
+    const std::size_t minimumFakeHeaderSize =
+        kManualMapFakePeHeaderOffset + sizeof(IMAGE_NT_HEADERS64) + sizeof(IMAGE_SECTION_HEADER);
+    if (sizeOfHeaders < minimumFakeHeaderSize)
+    {
+        wprintf(L"ManualMap fake PE header needs at least 0x%zX header bytes; image only has 0x%lX.\n",
+                minimumFakeHeaderSize,
+                sizeOfHeaders);
+        return false;
+    }
+
+    fakeHeaders.assign(sizeOfHeaders, 0);
+
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(fakeHeaders.data());
+    dos->e_magic = IMAGE_DOS_SIGNATURE;
+    dos->e_lfanew = kManualMapFakePeHeaderOffset;
+
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(
+        fakeHeaders.data() + kManualMapFakePeHeaderOffset);
+    nt->Signature = IMAGE_NT_SIGNATURE;
+    nt->FileHeader.Machine = IMAGE_FILE_MACHINE_AMD64;
+    nt->FileHeader.NumberOfSections = 1;
+    nt->FileHeader.SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER64);
+    nt->FileHeader.Characteristics =
+        IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_DLL | IMAGE_FILE_LARGE_ADDRESS_AWARE;
+
+    nt->OptionalHeader.Magic = IMAGE_NT_OPTIONAL_HDR64_MAGIC;
+    nt->OptionalHeader.ImageBase = remoteImageBase;
+    nt->OptionalHeader.SectionAlignment = kManualMapFakeSectionAlignment;
+    nt->OptionalHeader.FileAlignment = kManualMapFakeFileAlignment;
+    nt->OptionalHeader.SizeOfImage = kManualMapFakeImageSize;
+    nt->OptionalHeader.SizeOfHeaders = sizeOfHeaders;
+    nt->OptionalHeader.SizeOfInitializedData = kManualMapFakeSectionSize;
+    nt->OptionalHeader.MajorOperatingSystemVersion = 6;
+    nt->OptionalHeader.MajorSubsystemVersion = 6;
+    nt->OptionalHeader.Subsystem = IMAGE_SUBSYSTEM_WINDOWS_GUI;
+    nt->OptionalHeader.NumberOfRvaAndSizes = IMAGE_NUMBEROF_DIRECTORY_ENTRIES;
+
+    auto* section = IMAGE_FIRST_SECTION(nt);
+    std::memcpy(section->Name, ".rsrc", sizeof(".rsrc"));
+    section->Misc.VirtualSize = kManualMapFakeSectionSize;
+    section->VirtualAddress = kManualMapFakeSectionRva;
+    section->Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+    return true;
+}
+
+bool FakeManualMapHeaders(HANDLE process,
+                          LPVOID remoteImage,
+                          std::uintptr_t remoteImageBase,
+                          DWORD sizeOfHeaders)
+{
+    if (sizeOfHeaders == 0)
+    {
+        return true;
+    }
+
+    // Fake PE headers are different from erasing headers: a naive scanner still
+    // sees MZ/PE, but the metadata no longer describes the real mapped image.
+    // This deliberately simple decoy claims there is only one read-only .rsrc
+    // section, so detectors that trust header metadata miss the executable
+    // private pages that are still present elsewhere in the allocation.
+    std::vector<unsigned char> fakeHeaders;
+    if (!BuildFakeManualMapHeaders(remoteImageBase, sizeOfHeaders, fakeHeaders) ||
+        !WriteManualMapHeaderBytes(process, remoteImage, fakeHeaders, L"fake header"))
+    {
+        return false;
+    }
+
+    wprintf(L"ManualMap replaced 0x%lX byte(s) with a fake non-executable PE header.\n",
             sizeOfHeaders);
     return true;
 }
@@ -2701,10 +2804,21 @@ bool InjectDllWithManualMap(DWORD targetPid,
         return false;
     }
 
-    if (config.manualMap.eraseHeaders &&
+    if (config.manualMap.headerMode == ManualMapHeaderMode::Erase &&
         !EraseManualMapHeaders(process.get(), remoteImage, nt->OptionalHeader.SizeOfHeaders))
     {
         wprintf(L"ManualMap initialized the DLL, but PE header erase failed. "
+                L"Leaving the mapped image allocated for inspection.\n");
+        return false;
+    }
+
+    if (config.manualMap.headerMode == ManualMapHeaderMode::Fake &&
+        !FakeManualMapHeaders(process.get(),
+                              remoteImage,
+                              remoteImageBase,
+                              nt->OptionalHeader.SizeOfHeaders))
+    {
+        wprintf(L"ManualMap initialized the DLL, but fake PE header write failed. "
                 L"Leaving the mapped image allocated for inspection.\n");
         return false;
     }

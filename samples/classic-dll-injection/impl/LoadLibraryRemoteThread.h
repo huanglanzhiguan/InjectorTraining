@@ -31,9 +31,16 @@ struct ThreadHijackConfig
     DWORD threadId = 0;
 };
 
+enum class ManualMapHeaderMode
+{
+    Keep,
+    Erase,
+    Fake
+};
+
 struct ManualMapConfig
 {
-    bool eraseHeaders = false;
+    ManualMapHeaderMode headerMode = ManualMapHeaderMode::Keep;
 };
 
 struct InjectorConfig

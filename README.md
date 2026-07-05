@@ -148,7 +148,10 @@ After students observe the baseline manual-map artifacts, rerun with PE-header e
 
 ```powershell
 .\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --manualmap-erase-headers --dll .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --manualmap-fake-headers --dll .\x64\Debug\TrainingDll.dll
 ```
+
+The fake-header variant keeps `MZ`/`PE` bytes present but replaces the real section table with a tiny read-only decoy, which demonstrates why detectors should not blindly trust PE header metadata.
 
 ## Mental Model
 
@@ -255,6 +258,7 @@ Current implemented load commands:
 .\x64\Debug\InjectorLab.exe --target app --load LdrpLoadDllInternal --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
 .\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --dll .\x64\Debug\TrainingDll.dll
 .\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --manualmap-erase-headers --dll .\x64\Debug\TrainingDll.dll
+.\x64\Debug\InjectorLab.exe --target app --load ManualMap --launch CreateRemoteThread --manualmap-fake-headers --dll .\x64\Debug\TrainingDll.dll
 ```
 
 `LoadLibraryW` can be launched directly with the DLL path as the one argument. `LdrLoadDll` needs the remote adapter stub because it expects native call data such as `UNICODE_STRING`. `LdrpLoadDll` and `LdrpLoadDllInternal` add an exact-PDB symbol resolution step because these private routines are not exported. `ManualMap` skips the normal loader for the training DLL and performs core PE loader work in the injector.
@@ -268,6 +272,7 @@ What to observe:
 - Image-load telemetry for the DLL
 - With `ManualMap`, the training DLL should not appear as a normal loader-list module; look instead for private executable memory and thread starts in private image-like memory.
 - With `--manualmap-erase-headers`, the PE-like private image row should become harder to trigger because the remote `MZ`/`PE` headers and section table are zeroed after initialization.
+- With `--manualmap-fake-headers`, `MZ`/`PE` still exist, but the fake header claims a read-only non-executable layout; this should also bypass the current PE-like image row while leaving executable private memory visible.
 
 Limitations:
 
